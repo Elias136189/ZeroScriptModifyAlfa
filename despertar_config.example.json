@@ -1,0 +1,70 @@
+{
+  "enabled": true,
+  "default_targets": [
+    "opencode"
+  ],
+  "min_seconds_between": 60,
+  "max_per_hour": 6,
+  "max_per_day": 20,
+  "max_age_hours": 24,
+  "max_attempts": 5,
+  "retry_base_seconds": 30,
+  "require_reply": true,
+  "allowed_senders": [
+    "zeroscript",
+    "usuario"
+  ],
+  "trigger": {
+    "require": true,
+    "tokens": [
+      "@despertar",
+      "[despertar]"
+    ]
+  },
+  "watch": {
+    "enabled": true,
+    "interval_seconds": 2.5,
+    "targets": [
+      "opencode"
+    ]
+  },
+  "prompt": "Lee el mensaje {id} de {from} en el buzon compartido. Responde una sola vez con msg_reply. Si msg_inbox responde 'Sin mensajes nuevos.', vuelve a leerlo con include_read=true: el aviso pudo marcarlo como leido. No envies mensajes nuevos. No uses pc_shell, pc_write ni despertar.py. Si ya respondiste o el mensaje es automatico, no hagas nada.",
+  "targets": {
+    "claude": {
+      "method": "none",
+      "fallback": [],
+      "note": "Claude Desktop con cuenta gratis solo tiene chat: no hay CLI ni despertar automatico. Abre Claude y pide msg_inbox, o usa una instruccion personalizada para que revise el buzon.",
+      "process": [
+        "claude",
+        "Claude"
+      ],
+      "title": "Claude",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}"
+      ],
+      "cli_timeout_seconds": 240,
+      "window_reply_timeout_seconds": 90
+    },
+    "opencode": {
+      "method": "cli",
+      "fallback": [],
+      "process": [
+        "OpenCode Dev",
+        "OpenCode"
+      ],
+      "title": "OpenCode",
+      "command": [
+        "C:/Users/TU_USUARIO/AppData/Local/Programs/ZeroScript/opencode.exe",
+        "run",
+        "--agent",
+        "wake",
+        "--model",
+        "opencode/deepseek-v4.1-flash-free",
+        "{prompt}"
+      ],
+      "cli_timeout_seconds": 300
+    }
+  }
+}

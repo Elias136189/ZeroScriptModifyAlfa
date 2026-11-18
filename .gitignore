@@ -1,0 +1,40 @@
+# ── Carpetas solo locales ────────────────────────────────────────────────
+Compressed/
+Deprecated/
+ExtensionPresentation/
+presentation/
+docs/
+
+# ── Comprimidos ──────────────────────────────────────────────────────────
+*.zip
+
+# ── Herramientas locales de diagnostico ─────────────────────────────────
+probe.py
+devtools/
+
+# ── Logs y estado de ejecucion ──────────────────────────────────────────
+logs/
+wake_state.json
+wake_state.lock
+wake_off
+*.pid
+chat-local/chat-*.pid
+
+# ── Respaldos previos a una edicion (convencion .antes-*) ────────────────
+backups/
+*.antes-*
+
+# ── Carpeta de trabajo del agente despertado ────────────────────────────
+workspace_wake/
+
+# ── Configuracion real con rutas absolutas de este PC ───────────────────
+# Se publican las versiones *.example.json; copia y ajusta las rutas.
+despertar_config.json
+pc_agent_config.json
+pc_agent_config.restricted.json
+
+# ── Sistema ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+__pycache__/

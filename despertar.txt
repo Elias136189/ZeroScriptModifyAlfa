@@ -1,0 +1,647 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Despierta a otra IA cuando tiene un mensaje nuevo en el buzon compartido.
+
+Por defecto SOLO simula: dice que mensaje elegiria y que prompt inyectaria.
+Con ``--apply`` enfoca la ventana de la app (o lanza el CLI configurado) y
+pega el prompt restringido.
+
+Reglas anti-bucle (todas activas):
+  1. Solo hilos nuevos: mensajes con ``reply_to`` vacio y ``hops`` 0.
+  2. Un mensaje ya procesado no vuelve a despertar (``wake_state.json``).
+  3. Los mensajes con asunto ``[auto]`` se ignoran.
+  4. Presupuesto: 1 cada 60 s, 6 por hora y 20 por dia.
+  5. Interruptor: si existe el archivo ``wake_off`` junto al script, no hace nada.
+  6. Prompt fijo: el cuerpo del mensaje nunca se inyecta.
+  7. Solo se procesa un mensaje por ejecucion (el mas antiguo pendiente).
+
+Ejemplos:
+    py -3 despertar.py
+    py -3 despertar.py claude
+    py -3 despertar.py --apply
+    py -3 despertar.py opencode --apply --method window
+    py -3 despertar.py chainB --include-read
+    py -3 despertar.py --status
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+import mailbox_store  # noqa: E402
+
+DEFAULT_STATE_FILE = HERE / "wake_state.json"
+DEFAULT_CONFIG_FILE = HERE / "despertar_config.json"
+OFF_SWITCH = HERE / "wake_off"
+LOG_FILE = HERE / "logs" / "despertar.log"
+
+DEFAULT_PROMPT = (
+    "Lee el mensaje {id} de {from} en el buzon compartido. Responde una sola vez "
+    "con msg_reply. No envies mensajes nuevos. No uses pc_shell, pc_write ni "
+    "despertar.py. Si ya respondiste o el mensaje es automatico, no hagas nada."
+)
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "enabled": True,
+    "default_targets": ["claude", "opencode"],
+    "min_seconds_between": 60,
+    "max_per_hour": 6,
+    "max_per_day": 20,
+    "max_age_hours": 24,
+    "prompt": DEFAULT_PROMPT,
+    "targets": {
+        "claude": {
+            "method": "window",
+            "process": ["claude", "Claude"],
+            "title": "Claude",
+            "command": ["claude", "-p", "{prompt}"],
+        },
+        "opencode": {
+            "method": "window",
+            "process": ["OpenCode Dev", "OpenCode"],
+            "title": "OpenCode",
+            "command": ["opencode", "run", "{prompt}"],
+        },
+    },
+}
+
+# PowerShell de ventana: ASCII puro a proposito. El prompt viaja por variable
+# de entorno (UTF-16) para no depender de la codificacion de la consola.
+WINDOW_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$names = $env:ZS_WAKE_PROCESS | ConvertFrom-Json
+$title = $env:ZS_WAKE_TITLE
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class ZWake {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+}
+"@ | Out-Null
+$found = @()
+foreach ($n in $names) {
+  foreach ($p in @(Get-Process -Name $n -ErrorAction SilentlyContinue)) {
+    if ($p.MainWindowHandle -eq 0) { continue }
+    if ($title -and ($p.MainWindowTitle -notmatch $title)) { continue }
+    $found += $p
+  }
+}
+if ($found.Count -eq 0) {
+  @{ ok = $false; error = 'no-window' } | ConvertTo-Json -Compress
+  exit 0
+}
+$p = $found[0]
+[ZWake]::ShowWindow($p.MainWindowHandle, 9) | Out-Null
+Start-Sleep -Milliseconds 300
+[ZWake]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
+Start-Sleep -Milliseconds 400
+if ([ZWake]::GetForegroundWindow() -ne $p.MainWindowHandle) {
+  @{ ok = $false; error = 'no-foreground'; pid = $p.Id; process = $p.ProcessName } |
+    ConvertTo-Json -Compress
+  exit 0
+}
+Set-Clipboard -Value $env:ZS_WAKE_PROMPT
+Start-Sleep -Milliseconds 200
+[System.Windows.Forms.SendKeys]::SendWait('^v')
+Start-Sleep -Milliseconds 250
+[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+@{ ok = $true; pid = $p.Id; process = $p.ProcessName; title = $p.MainWindowTitle } |
+  ConvertTo-Json -Compress
+"""
+
+
+def safe_print(text: str = "") -> None:
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(text.encode("ascii", "replace").decode("ascii"))
+
+
+def log(message: str, *, quiet: bool = False) -> None:
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{stamp} {message}"
+    if not quiet:
+        safe_print(f"[despertar] {message}")
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        pass
+
+
+def read_json(path: Path, default: Any) -> Any:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return default
+    except Exception as exc:
+        log(f"no se pudo leer {path.name}: {exc}; uso valores por defecto")
+        return default
+    return data if isinstance(data, type(default)) else default
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    mailbox_store.atomic_write_json(path, payload)
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    raw = read_json(path, {})
+    config = dict(DEFAULT_CONFIG)
+    for key, value in raw.items():
+        if key == "targets" and isinstance(value, dict):
+            continue
+        config[key] = value
+    targets = {name: dict(cfg) for name, cfg in DEFAULT_CONFIG["targets"].items()}
+    for name, cfg in (raw.get("targets") or {}).items():
+        if isinstance(cfg, dict):
+            targets[name] = {**targets.get(name, {}), **cfg}
+    config["targets"] = targets
+    return config
+
+
+def load_state(path: Path) -> dict[str, Any]:
+    raw = read_json(path, {})
+    state = {
+        "version": 1,
+        "wakes": raw.get("wakes") if isinstance(raw.get("wakes"), list) else [],
+        "processed": raw.get("processed") if isinstance(raw.get("processed"), dict) else {},
+    }
+    return state
+
+
+def save_state(path: Path, state: dict[str, Any]) -> None:
+    state["version"] = 1
+    state["wakes"] = [w for w in state.get("wakes", []) if isinstance(w, dict)][-500:]
+    processed = state.get("processed") or {}
+    state["processed"] = {
+        str(name): [str(i) for i in ids][-200:]
+        for name, ids in processed.items()
+        if isinstance(ids, list)
+    }
+    write_json(path, state)
+
+
+def parsed_epoch(message: dict[str, Any], path: Path) -> float:
+    return mailbox_store.message_timestamp(path, message)
+
+
+def fmt_age(seconds: float) -> str:
+    if seconds < 60:
+        return f"{int(seconds)} s"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} min"
+    if seconds < 86400:
+        return f"{seconds / 3600:.1f} h"
+    return f"{seconds / 86400:.1f} d"
+
+
+def short_id(value: Any) -> str:
+    text = str(value or "")
+    return text[:8] if len(text) > 8 else text
+
+
+def message_subject(message: dict[str, Any]) -> str:
+    return str(message.get("subject") or "").strip()
+
+
+def prompt_for(template: str, message: dict[str, Any]) -> str:
+    try:
+        return template.format(
+            id=message.get("id", ""),
+            from_=message.get("from", ""),
+            **{"from": message.get("from", "")},
+            to=message.get("to", ""),
+            subject=message_subject(message),
+        )
+    except Exception:
+        return DEFAULT_PROMPT.format(
+            id=message.get("id", ""),
+            **{"from": message.get("from", "")},
+        )
+
+
+def collect_messages(
+    root: Path,
+    target: str,
+    *,
+    include_read: bool,
+    max_age_hours: float,
+    processed: list[str],
+) -> list[dict[str, Any]]:
+    """Mensajes dirigidos a ``target`` con el motivo para aceptar o descartar."""
+    wanted = target.casefold()
+    now = time.time()
+    rows: list[dict[str, Any]] = []
+    for path, message in mailbox_store.iter_messages(root, log=lambda m: log(m)):
+        if str(message.get("to") or "").strip().casefold() != wanted:
+            continue
+        reason = ""
+        if str(message.get("from") or "").strip().casefold() == wanted:
+            reason = "lo envio el propio destino"
+        elif str(message.get("reply_to") or "").strip():
+            reason = f"es respuesta (reply_to={short_id(message.get('reply_to'))})"
+        elif int(message.get("hops") or 0) != 0:
+            reason = f"hops={message.get('hops')}"
+        elif message_subject(message).lower().startswith("[auto]"):
+            reason = "asunto [auto]"
+        elif str(message.get("id") or "") in processed:
+            reason = "ya despertado antes"
+        elif bool(message.get("read", False)) and not include_read:
+            reason = "ya leido"
+        age = max(0.0, now - parsed_epoch(message, path))
+        if not reason and max_age_hours > 0 and age > max_age_hours * 3600:
+            reason = f"mas de {max_age_hours:g} h"
+        rows.append({
+            "path": path,
+            "message": message,
+            "reason": reason,
+            "age": age,
+        })
+    rows.sort(key=lambda row: parsed_epoch(row["message"], row["path"]))
+    return rows
+
+
+def budget_status(config: dict[str, Any], state: dict[str, Any], now: float) -> tuple[list[str], dict[str, int]]:
+    wakes = [
+        w for w in state.get("wakes", [])
+        if isinstance(w, dict) and str(w.get("result")) == "ok"
+    ]
+    epochs = []
+    for wake in wakes:
+        try:
+            epochs.append(float(wake.get("epoch") or 0))
+        except Exception:
+            continue
+    epochs.sort()
+    last = epochs[-1] if epochs else 0.0
+    in_hour = sum(1 for value in epochs if now - value <= 3600)
+    in_day = sum(1 for value in epochs if now - value <= 86400)
+    problems: list[str] = []
+    cooldown = int(config.get("min_seconds_between") or 60)
+    if last and now - last < cooldown:
+        problems.append(f"espera {int(cooldown - (now - last))} s (minimo {cooldown} s entre despertares)")
+    if in_hour >= int(config.get("max_per_hour") or 6):
+        problems.append(f"limite por hora alcanzado ({in_hour}/{config.get('max_per_hour')})")
+    if in_day >= int(config.get("max_per_day") or 20):
+        problems.append(f"limite diario alcanzado ({in_day}/{config.get('max_per_day')})")
+    return problems, {"hour": in_hour, "day": in_day, "last": last}
+
+
+def target_config(config: dict[str, Any], target: str) -> dict[str, Any] | None:
+    for name, cfg in config.get("targets", {}).items():
+        if str(name).casefold() == target.casefold():
+            return cfg
+    return None
+
+
+def acquire_lock(path: Path) -> bool:
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="ascii") as handle:
+                handle.write(f"{os.getpid()} {time.time()}")
+            return True
+        except FileExistsError:
+            try:
+                age = time.time() - path.stat().st_mtime
+            except OSError:
+                age = 9999
+            if age <= 180:
+                return False
+            try:
+                path.unlink()
+            except OSError:
+                return False
+        except OSError:
+            return False
+    return False
+
+
+def release_lock(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def wake_window(cfg: dict[str, Any], prompt: str, timeout: float) -> tuple[bool, str]:
+    processes = cfg.get("process") or []
+    if isinstance(processes, str):
+        processes = [processes]
+    if not processes:
+        return False, "falta 'process' en la configuracion del destino"
+    exe = shutil.which("powershell") or shutil.which("pwsh")
+    if not exe:
+        return False, "no se encontro PowerShell"
+    env = os.environ.copy()
+    env["ZS_WAKE_PROCESS"] = json.dumps(processes)
+    env["ZS_WAKE_TITLE"] = str(cfg.get("title") or "")
+    env["ZS_WAKE_PROMPT"] = prompt
+    # -Command - con stdin redirigido no ejecuta el script en Windows
+    # PowerShell; un archivo temporal con -File si es fiable.
+    fd, script_name = tempfile.mkstemp(prefix="zs-wake-", suffix=".ps1")
+    os.close(fd)
+    try:
+        Path(script_name).write_text(WINDOW_SCRIPT, encoding="ascii")
+        proc = subprocess.run(
+            [exe, "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", script_name],
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"PowerShell no respondio en {timeout:g} s"
+    except OSError as exc:
+        return False, f"no se pudo ejecutar PowerShell: {exc}"
+    finally:
+        try:
+            os.unlink(script_name)
+        except OSError:
+            pass
+    lines = [line for line in (proc.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        detail = (proc.stderr or "").strip().splitlines()
+        return False, detail[-1] if detail else "PowerShell no devolvio resultado"
+    try:
+        data = json.loads(lines[-1])
+    except Exception:
+        return False, f"respuesta inesperada de PowerShell: {lines[-1][:200]}"
+    if data.get("ok"):
+        return True, f"pid={data.get('pid')} ventana={data.get('title') or '(sin titulo)'}"
+    error = str(data.get("error") or "desconocido")
+    if error == "no-window":
+        names = ", ".join(str(p) for p in processes)
+        return False, f"no hay ventana abierta de: {names}"
+    if error == "no-foreground":
+        return False, "la ventana no paso a primer plano; haz clic en ella y reintenta"
+    return False, f"error de ventana: {error}"
+
+
+def wake_cli(cfg: dict[str, Any], prompt: str, timeout: float) -> tuple[bool, str]:
+    command = cfg.get("command")
+    if not command or not isinstance(command, list):
+        return False, "falta 'command' (lista) en la configuracion del destino"
+    argv = [str(part).replace("{prompt}", prompt) for part in command]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return False, f"no se encontro el ejecutable: {argv[0]}"
+    except subprocess.TimeoutExpired:
+        return False, f"el CLI no termino en {timeout:g} s"
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        return False, f"el CLI salio con codigo {proc.returncode}: {detail[-1][:200] if detail else ''}"
+    return True, "CLI ejecutado"
+
+
+def print_status(config: dict[str, Any], state: dict[str, Any], state_path: Path) -> None:
+    now = time.time()
+    problems, stats = budget_status(config, state, now)
+    safe_print("")
+    safe_print(f"Estado: {state_path}")
+    safe_print(f"Despertares registrados: {len([w for w in state.get('wakes', []) if isinstance(w, dict)])}")
+    wakes = [w for w in state.get("wakes", []) if isinstance(w, dict)]
+    for wake in wakes[-5:]:
+        safe_print(f"  {wake.get('ts', '?')}  {wake.get('target', '?')}  "
+                   f"msg {short_id(wake.get('message_id'))}  {wake.get('result', '?')}")
+    if not wakes:
+        safe_print("  (ninguno todavia)")
+    safe_print(f"Presupuesto: {stats['hour']}/{config.get('max_per_hour')} por hora, "
+               f"{stats['day']}/{config.get('max_per_day')} por dia")
+    if problems:
+        for problem in problems:
+            safe_print(f"  BLOQUEADO: {problem}")
+    else:
+        safe_print("  disponible")
+    processed = state.get("processed") or {}
+    if processed:
+        counts = ", ".join(f"{name}: {len(ids)}" for name, ids in processed.items() if isinstance(ids, list))
+        safe_print(f"Procesados por destino: {counts}")
+    safe_print("")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Despierta a otra IA cuando tiene un mensaje nuevo (simulacion por defecto).",
+    )
+    parser.add_argument("target", nargs="*", help="Destino(s) del buzon; por defecto los de la configuracion.")
+    parser.add_argument("--apply", action="store_true", help="Despierta de verdad; sin esto solo simula.")
+    parser.add_argument("--method", choices=["window", "cli", "none"], default="",
+                        help="Fuerza el metodo; 'none' solo vale en simulacion.")
+    parser.add_argument("--include-read", action="store_true",
+                        help="En simulacion, trata tambien los mensajes ya leidos como candidatos.")
+    parser.add_argument("--max-age-hours", type=float, default=None,
+                        help="Antiguedad maxima en horas (0 = sin limite).")
+    parser.add_argument("--mailbox", default="", help="Carpeta del buzon.")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG_FILE), help="Archivo de configuracion.")
+    parser.add_argument("--state", default=str(DEFAULT_STATE_FILE), help="Archivo de estado.")
+    parser.add_argument("--status", action="store_true", help="Muestra el estado y el presupuesto.")
+    parser.add_argument("--quiet", action="store_true", help="No imprime avisos del buzon.")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    config_path = Path(args.config).expanduser()
+    state_path = Path(args.state).expanduser()
+    config = load_config(config_path)
+    state = load_state(state_path)
+
+    mailbox_raw = args.mailbox or os.environ.get("ZS_PC_MAILBOX_DIR") or ""
+    if not mailbox_raw:
+        mailbox_raw = read_json(HERE / "pc_agent_config.json", {}).get("mailbox_dir") or ""
+    root = mailbox_store.resolve_mailbox_dir(mailbox_raw, base_dir=HERE)
+
+    if args.status:
+        print_status(config, state, state_path)
+        return 0
+
+    if args.method == "none" and args.apply:
+        safe_print("ERROR: --method none solo sirve para simular; quita --apply.")
+        return 1
+    if args.include_read and args.apply:
+        safe_print("ERROR: --include-read solo vale en simulacion; quita --apply.")
+        return 1
+
+    max_age = config.get("max_age_hours")
+    max_age = float(max_age) if max_age is not None else 24.0
+    if args.max_age_hours is not None:
+        max_age = args.max_age_hours
+
+    if args.target:
+        targets = [str(t) for t in args.target]
+    else:
+        targets = [str(t) for t in (config.get("default_targets") or [])]
+
+    if not args.apply:
+        safe_print("")
+        safe_print("MODO SIMULACION: no se despertara nada. Usa --apply para activar.")
+        safe_print(f"Buzon: {root}")
+        if OFF_SWITCH.exists():
+            safe_print(f"AVISO: existe el interruptor {OFF_SWITCH.name}; con --apply no haria nada.")
+        if not config.get("enabled", True):
+            safe_print("AVISO: 'enabled' es false en la configuracion; con --apply no haria nada.")
+        problems, stats = budget_status(config, state, time.time())
+        safe_print(f"Presupuesto: {stats['hour']}/{config.get('max_per_hour')} por hora, "
+                   f"{stats['day']}/{config.get('max_per_day')} por dia")
+        for problem in problems:
+            safe_print(f"  BLOQUEADO: {problem}")
+        safe_print("")
+
+    now = time.time()
+    exit_code = 0
+    woke_something = False
+
+    for target in targets:
+        cfg = target_config(config, target)
+        method = args.method or str((cfg or {}).get("method") or "window")
+        processed = [str(i) for i in (state.get("processed") or {}).get(target, [])]
+        rows = collect_messages(
+            root, target,
+            include_read=bool(args.include_read),
+            max_age_hours=max_age,
+            processed=processed,
+        )
+        safe_print(f"== Destino: {target} ==")
+        if cfg is None:
+            safe_print("  (sin configuracion propia; solo se puede simular)")
+        else:
+            processes = cfg.get("process") or []
+            if isinstance(processes, str):
+                processes = [processes]
+            detail = f"proceso: {', '.join(str(p) for p in processes)}" if processes else "CLI"
+            safe_print(f"  metodo: {method} ({detail})")
+
+        if not rows:
+            safe_print("  Sin mensajes para este destino.")
+            safe_print("")
+            continue
+
+        candidates = []
+        for row in rows:
+            message = row["message"]
+            subject = message_subject(message)
+            label = f"  {short_id(message.get('id'))}  hace {fmt_age(row['age']):>7}  " \
+                    f"de {str(message.get('from'))[:12]:<12}  '{subject[:40]}'"
+            if row["reason"]:
+                safe_print(f"{label}  [descartado: {row['reason']}]")
+            else:
+                candidates.append(row)
+                safe_print(f"{label}  [CANDIDATO]")
+
+        if not candidates:
+            safe_print("  Nada que despertar.")
+            safe_print("")
+            continue
+
+        chosen = candidates[0]
+        message = chosen["message"]
+        prompt = prompt_for(str(config.get("prompt") or DEFAULT_PROMPT), message)
+        safe_print("")
+        safe_print(f"  Elegido: {message.get('id')} de {message.get('from')}")
+        safe_print("  Prompt que se inyectaria:")
+        for line in prompt.splitlines() or [""]:
+            safe_print(f"    {line}")
+        safe_print("")
+
+        if not args.apply:
+            safe_print("  (simulacion: no se inyecto nada)")
+            safe_print("")
+            continue
+
+        if woke_something:
+            safe_print("  Ya se despertó a otro destino en esta ejecucion; se omite.")
+            safe_print("")
+            continue
+
+        if OFF_SWITCH.exists():
+            safe_print(f"  BLOQUEADO: existe {OFF_SWITCH} (interruptor de emergencia).")
+            exit_code = 2
+            continue
+        if not config.get("enabled", True):
+            safe_print("  BLOQUEADO: 'enabled' es false en despertar_config.json.")
+            exit_code = 2
+            continue
+
+        problems, _stats = budget_status(config, state, time.time())
+        if problems:
+            for problem in problems:
+                safe_print(f"  BLOQUEADO: {problem}")
+            exit_code = 4
+            continue
+
+        if cfg is None:
+            safe_print(f"  ERROR: no hay configuracion para '{target}' en {config_path.name}.")
+            exit_code = 1
+            continue
+        if method == "none":
+            safe_print("  ERROR: metodo 'none' no despierta nada.")
+            exit_code = 1
+            continue
+
+        lock_path = state_path.with_suffix(".lock")
+        if not acquire_lock(lock_path):
+            safe_print("  BLOQUEADO: otra ejecucion de despertar esta en curso.")
+            exit_code = 4
+            continue
+        try:
+            if method == "window":
+                ok, detail = wake_window(cfg, prompt, timeout=30)
+            elif method == "cli":
+                timeout = float(cfg.get("cli_timeout_seconds") or 180)
+                ok, detail = wake_cli(cfg, prompt, timeout=timeout)
+            else:
+                ok, detail = False, f"metodo desconocido: {method}"
+
+            if not ok:
+                log(f"destino={target} msg={message.get('id')} metodo={method} FALLO: {detail}")
+                safe_print(f"  FALLO: {detail}")
+                exit_code = 1
+                continue
+
+            log(f"destino={target} msg={message.get('id')} metodo={method} OK: {detail}")
+            safe_print(f"  DESPERTADO: {detail}")
+
+            stamped = datetime.now().astimezone()
+            state.setdefault("wakes", []).append({
+                "ts": stamped.isoformat(timespec="seconds"),
+                "epoch": stamped.timestamp(),
+                "target": target,
+                "message_id": message.get("id"),
+                "method": method,
+                "result": "ok",
+                "detail": detail,
+            })
+            processed_now = state.setdefault("processed", {}).setdefault(target, [])
+            if str(message.get("id")) not in processed_now:
+                processed_now.append(str(message.get("id")))
+            save_state(state_path, state)
+            woke_something = True
+            exit_code = 0
+        finally:
+            release_lock(lock_path)
+        safe_print("")
+
+    return exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

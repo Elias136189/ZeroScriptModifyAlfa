@@ -1,0 +1,33 @@
+{
+  "workspace": "C:/Users/TU_USUARIO/Documents/ZeroScript-Modify",
+  "mailbox_dir": "~/Documents/AI-Shared/mailbox",
+  "allow_outside_workspace": false,
+  "allow_shell": false,
+  "shell_timeout_ms": 120000,
+  "max_read_bytes": 2000000,
+  "max_output_chars": 40000,
+  "max_grep_results": 100,
+  "max_hops": 6,
+  "max_msgs_per_10min": 30,
+  "max_message_chars": 20000,
+  "mailbox_archive_days": 30,
+  "skip_dirs": [
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "env",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    "target",
+    "bin",
+    "obj",
+    ".idea",
+    ".vscode",
+    ".cache",
+    ".pytest_cache"
+  ]
+}

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat de IAs</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2a2e38; --text: #e8eaf0; --muted: #8a90a0;
+    --user: #2b5cff; --opencode: #1f9d6b; --claude: #d9733a; --antigravity: #2aa5c9; --kimi: #e0467c; --codex: #c9a227; --web: #8a5cf6; --other: #5a6275;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, "Segoe UI", sans-serif;
+         display: flex; flex-direction: column; }
+  header { padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+           display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tab { background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 999px;
+         padding: 4px 12px; cursor: pointer; font: inherit; font-size: 13px; }
+  .tab.active { color: var(--text); border-color: var(--text); }
+  .status { margin-left: auto; font-size: 12px; color: var(--muted); }
+  #chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: min(760px, 88%); display: flex; flex-direction: column; gap: 4px; }
+  .msg.me { align-self: flex-end; align-items: flex-end; }
+  .label { font-size: 12px; font-weight: 700; letter-spacing: .02em; display: flex; gap: 8px; align-items: center; }
+  .tag { padding: 2px 9px; border-radius: 999px; color: #fff; font-size: 12px; }
+  .meta { font-weight: 400; color: var(--muted); }
+  .bubble { background: var(--panel); border: 1px solid var(--line); border-left-width: 4px;
+            border-radius: 10px; padding: 9px 13px; white-space: pre-wrap; word-break: break-word; }
+  .msg.me .bubble { border-left-width: 1px; border-right-width: 4px; }
+  .empty { color: var(--muted); text-align: center; margin-top: 40px; }
+  form { display: flex; gap: 8px; padding: 12px 16px; background: var(--panel); border-top: 1px solid var(--line);
+         align-items: flex-end; flex-wrap: wrap; }
+  form label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
+  input, textarea { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+                    padding: 8px 10px; font: inherit; }
+  input { width: 150px; }
+  textarea { flex: 1; min-width: 220px; resize: vertical; min-height: 40px; max-height: 160px; }
+  button.send { background: var(--user); color: #fff; border: 0; border-radius: 8px; padding: 10px 18px;
+                font: inherit; font-weight: 600; cursor: pointer; }
+  button.send:disabled { opacity: .5; cursor: default; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Chat de IAs</h1>
+  <div class="tabs" id="tabs"></div>
+  <div class="status" id="status">conectando…</div>
+</header>
+
+<div id="chat"></div>
+
+<form id="form">
+  <label>Para
+    <input id="to" list="agents" placeholder="agente o todos" autocomplete="off">
+    <datalist id="agents"></datalist>
+  </label>
+  <textarea id="body" placeholder="Escribe un mensaje (Enter envía, Shift+Enter salto de línea)"></textarea>
+  <button class="send" id="sendBtn" type="submit">Enviar</button>
+</form>
+
+<script>
+const chat = document.getElementById('chat');
+const tabsEl = document.getElementById('tabs');
+const statusEl = document.getElementById('status');
+const toEl = document.getElementById('to');
+const bodyEl = document.getElementById('body');
+const agentsEl = document.getElementById('agents');
+
+let USER = 'usuario';
+let all = [];
+let filter = 'todos';
+let lastKey = '';
+
+// Etiqueta visible y color según quién envió el mensaje.
+function who(name) {
+  const n = String(name || '').toLowerCase();
+  if (n === USER) return { text: 'Tú', color: 'var(--user)', group: 'tu' };
+  if (n === 'sin-firma') return { text: 'Sin firma', color: 'var(--other)', group: 'otros' };
+  if (n === 'opencode') return { text: 'OpenCode', color: 'var(--opencode)', group: 'opencode' };
+  if (n === 'claude' || n.includes('claude-desktop') || n.includes('claude_desktop'))
+    return { text: 'Claude Desktop', color: 'var(--claude)', group: 'claude' };
+  if (n === 'antigravity') return { text: 'Antigravity', color: 'var(--antigravity)', group: 'antigravity' };
+  if (n.includes('kimi')) return { text: 'Kimi Code CLI', color: 'var(--kimi)', group: 'kimi' };
+  if (n.includes('codex')) return { text: 'Codex (GPT)', color: 'var(--codex)', group: 'codex' };
+  if (n === 'zeroscript') return { text: 'IA web (ZeroScript)', color: 'var(--web)', group: 'web' };
+  return { text: 'IA web · ' + name, color: 'var(--web)', group: 'web' };
+}
+
+function fmtTime(ts) {
+  const d = new Date(ts);
+  if (isNaN(d)) return '';
+  return d.toLocaleString('es', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+// Agentes CLI/escritorio: solo aparecen mientras estén conectados (lo detecta el servidor).
+const AGENTS = [['opencode', 'OpenCode'], ['claude', 'Claude Desktop'], ['antigravity', 'Antigravity'],
+                ['kimi', 'Kimi Code CLI'], ['codex', 'Codex (GPT)']];
+let connected = null;   // null = el servidor aún no sabe -> se muestran todos
+let tabsKey = '';
+
+function isConnected(id) { return connected === null || connected.includes(id); }
+
+function visibleTabs() {
+  const tabs = [['todos', 'Todos'], ['tu', 'Tú']];
+  for (const [id, label] of AGENTS) if (isConnected(id)) tabs.push([id, label]);
+  // "IA web" no se puede detectar como conectada: solo sale si hay mensajes de ese tipo.
+  if (all.some(m => who(m.from).group === 'web' || who(m.to).group === 'web')) tabs.push(['web', 'IA web']);
+  return tabs;
+}
+
+function renderTabs() {
+  const groups = visibleTabs();
+  if (!groups.some(([id]) => id === filter)) { filter = 'todos'; lastKey = ''; }
+  const key = filter + '|' + groups.map(g => g[0]).join(',');
+  if (key === tabsKey) return;
+  tabsKey = key;
+  tabsEl.innerHTML = '';
+  for (const [id, label] of groups) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'tab' + (filter === id ? ' active' : '');
+    const isAgent = AGENTS.some(a => a[0] === id);
+    b.textContent = (isAgent && connected !== null ? '● ' : '') + label;
+    if (isAgent && connected !== null) b.title = 'Conectado';
+    b.onclick = () => { filter = id; lastKey = ''; tabsKey = ''; renderTabs(); render(); };
+    tabsEl.appendChild(b);
+  }
+}
+
+function render() {
+  const shown = all.filter(m => {
+    if (filter === 'todos') return true;
+    const gf = who(m.from).group, gt = who(m.to).group;
+    return gf === filter || gt === filter;
+  });
+  const key = filter + '|' + shown.map(m => m.id).join(',');
+  if (key === lastKey) return;
+  lastKey = key;
+
+  const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
+  chat.innerHTML = '';
+  if (!shown.length) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = 'Todavía no hay mensajes.';
+    chat.appendChild(e);
+    return;
+  }
+  for (const m of shown) {
+    const w = who(m.from);
+    const row = document.createElement('div');
+    row.className = 'msg' + (String(m.from).toLowerCase() === USER ? ' me' : '');
+
+    const label = document.createElement('div');
+    label.className = 'label';
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.style.background = w.color;
+    tag.textContent = w.text;
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = '→ ' + who(m.to).text + ' · ' + fmtTime(m.ts);
+    label.append(tag, meta);
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.style.borderColor = w.color;
+    bubble.textContent = (m.subject ? '[' + m.subject + ']\n' : '') + m.body;
+
+    row.append(label, bubble);
+    chat.appendChild(row);
+  }
+  if (atBottom || !chat.dataset.init) { chat.scrollTop = chat.scrollHeight; chat.dataset.init = '1'; }
+}
+
+let toTouched = false;
+toEl.addEventListener('input', () => { toTouched = true; });
+
+// Destinatarios: solo los agentes conectados (con el nombre real con que escriben, si ya han escrito).
+function updateAgents() {
+  const seen = new Set();
+  for (const m of all) { seen.add(m.from); seen.add(m.to); }
+  seen.delete(USER);
+  const names = [];
+  if (connected === null) {
+    for (const [id] of AGENTS) names.push(id);
+    for (const n of seen) if (!names.includes(n)) names.push(n);
+  } else {
+    for (const [id] of AGENTS) {
+      if (!connected.includes(id)) continue;
+      const real = [...seen].find(n => who(n).group === id);
+      names.push(real || id);
+    }
+  }
+  const key = names.join('|');
+  if (agentsEl.dataset.key !== key) {
+    agentsEl.dataset.key = key;
+    agentsEl.innerHTML = '';
+    // "todos" va siempre al final: el servidor manda una copia a cada agente.
+    for (const n of [...names, 'todos']) { const o = document.createElement('option'); o.value = n; agentsEl.appendChild(o); }
+  }
+  // Si aún no has elegido destinatario a mano, usa el primer agente conectado.
+  if (!toTouched && connected !== null && !names.includes(toEl.value)) toEl.value = names[0] || '';
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/messages', { cache: 'no-store' });
+    const data = await r.json();
+    USER = data.user || USER;
+    all = data.messages || [];
+    connected = Array.isArray(data.connected) ? data.connected : null;
+    const labels = connected === null ? '' :
+      ' · conectados: ' + (connected.length ? AGENTS.filter(a => connected.includes(a[0])).map(a => a[1]).join(', ') : 'ninguno');
+    statusEl.textContent = all.length + ' mensajes' + labels + ' · ' + new Date().toLocaleTimeString('es');
+    updateAgents();
+    renderTabs();
+    render();
+  } catch (e) {
+    statusEl.textContent = 'sin conexión con el servidor';
+  }
+}
+
+async function send() {
+  const to = toEl.value.trim();
+  const body = bodyEl.value;
+  if (!to || !body.trim()) return;
+  document.getElementById('sendBtn').disabled = true;
+  try {
+    const r = await fetch('/api/send', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: USER, to, body })
+    });
+    const data = await r.json();
+    if (!data.ok) throw new Error(data.error || 'error');
+    bodyEl.value = '';
+    await refresh();
+    chat.scrollTop = chat.scrollHeight;
+  } catch (e) {
+    alert('No se pudo enviar: ' + e.message);
+  } finally {
+    document.getElementById('sendBtn').disabled = false;
+    bodyEl.focus();
+  }
+}
+
+document.getElementById('form').addEventListener('submit', e => { e.preventDefault(); send(); });
+bodyEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+renderTabs();
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
