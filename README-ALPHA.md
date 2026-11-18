@@ -9,8 +9,7 @@ permisos, arranque oculto y buzón compartido multi-IA).
 - **Licencia:** GPL-3.0 (se conserva la del proyecto original).
 - **Crédito:** ZeroScript Free, de su autor original. Este repo no está
 afiliado a él.
-
-## Qué es
+ Qué es
 
 Un agente local para tu PC controlado desde chats de IA en el navegador, más
 un bus para que varias IAs colaboren entre sí:
