@@ -8,7 +8,7 @@
 // even when the bridge is offline. The agentic loop must never hang waiting.
 
 const PORT = 17613;
-const URL = `ws://127.0.0.1:${PORT}`;
+const BRIDGE_URL = `ws://127.0.0.1:${PORT}`;
 
 // Chat sites where a ZeroScript provider content script runs. Status pushes go
 // to every tab matching these. Add the new provider's URL pattern here (and in
@@ -63,7 +63,7 @@ function connect() {
   }
   clearTimeout(reconnectTimer);
   try {
-    ws = new WebSocket(URL);
+    ws = new WebSocket(BRIDGE_URL);
   } catch (e) {
     log("WebSocket ctor failed", e);
     scheduleReconnect();
