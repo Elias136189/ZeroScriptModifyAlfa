@@ -79,8 +79,12 @@ El proyecto ejecuta comandos y escribe archivos en tu PC. Antes de usarlo:
 
 - El despertar con modelo gratuito depende de la cuota del proveedor y puede
   fallar con "Free usage limit reached".
-- El ID de la extensión depende de la ruta de la carpeta; si mueves el
-  proyecto, actualiza `ZS_BRIDGE_EXTENSION_ID` en `start.bat`.
+- El ID de la extensión depende de la ruta de la carpeta. Si mueves el
+  proyecto, quita la extensión en `chrome://extensions` y vuelve a cargarla
+  desde `zeroscript-extension`; el navegador le asignará un ID nuevo. Copia ese
+  ID en `ZS_BRIDGE_EXTENSION_ID` de `start.bat` y `bridge_segundo_plano.vbs`
+  (o ejecuta `comprobar_proyecto.py`, que calcula el ID esperado y avisa si no
+  coincide).
 - `bridge_segundo_plano.vbs` está pendiente de retirar: no lo uses, arranca un
   bridge distinto al oficial.
 - `allowed_senders` filtra por el campo `from` del mensaje; no autentica.

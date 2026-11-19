@@ -7,7 +7,11 @@ cd /d "%~dp0"
 
 REM Pin the Chrome extension ID so the bridge only accepts connections from
 REM the ZeroScript extension, not any arbitrary extension (security fix).
-if not defined ZS_BRIDGE_EXTENSION_ID set "ZS_BRIDGE_EXTENSION_ID=ljkcldlijdibhfookemkeeefpmgijcge"
+REM The ID depends on the folder path because the manifest has no "key":
+REM SHA-256 of the absolute path of zeroscript-extension in UTF-16LE, first
+REM 16 bytes mapped to a-p. If the project folder is moved or renamed, update
+REM this value (comprobar_proyecto.py reports the expected ID).
+if not defined ZS_BRIDGE_EXTENSION_ID set "ZS_BRIDGE_EXTENSION_ID=jgigjkahlhhfcmbnlbmbbcdpeljdkidp"
 
 if not exist "%~dp0logs" mkdir "%~dp0logs" >nul 2>nul
 set "LOGFILE=%~dp0logs\start.log"

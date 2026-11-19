@@ -4,6 +4,29 @@ All notable changes to ZeroScript Free are documented here.
 
 ## [Unreleased]
 
+### Fixed — evaluación y arreglo (18-nov-2026)
+- **Extensión restaurada a la versión del agente de PC (2.2.0).** Ocho archivos de
+  `zeroscript-extension` (`manifest.json`, `popup.html`, `popup.js`, `background.js`,
+  `overlay.css`, `README.md`, `core/config.js`, `core/main.js`) habían vuelto a la
+  versión original «Roblox Studio Agent 1.5.5»: sin herramientas `pc_*`, sin la
+  confirmación previa `confirmPc` y con Roblox como servidor principal. Las 45
+  pruebas de la extensión pasaban igualmente porque no cubren esas partes. Se
+  restauraron desde el commit `c05399a`; lo que había quedó en
+  `backups\extension-revertida-20261118`.
+- **`comprobar_proyecto.py` detecta esa regresión** (manifest de Roblox, falta de
+  `confirmPc` o de `pc_shell`) y los `.bat`/`.cmd` con finales de línea LF.
+- **`pc_write` y `pc_edit` escriben de forma atómica** (archivo temporal en la misma
+  carpeta + `os.replace`): un corte o un disco lleno ya no dejan el archivo a medias.
+- **`pc_edit` conserva la codificación** (UTF-8, UTF-8 con BOM o cp1252) y **adapta
+  `\n` a CRLF** cuando el archivo usa CRLF, así que las ediciones de varias líneas
+  casan y no quedan finales mezclados. Si el texto nuevo no cabe en la codificación
+  original, escribe UTF-8 y lo avisa en la respuesta.
+- **Los 6 `.bat`/`.cmd` que seguían en LF pasan a CRLF** y `.gitattributes` fija
+  `*.bat` y `*.cmd` como `eol=crlf`.
+- `background.js`: `const URL` renombrado a `BRIDGE_URL` (ya no oculta la clase global).
+- `pc_agent_mcp.py`: eliminada `_safe_filename_part`, que no usaba nadie.
+- `.gitignore`: se ignoran los accesos directos `*.lnk`.
+
 ### Added — preparación de la alfa
 - **`vigilante_cambios.py`.** Registro semanal de cambios del proyecto con
   `watchdog`: CREATED/MODIFIED/DELETED/MOVED tanto de archivos como de
@@ -17,6 +40,15 @@ All notable changes to ZeroScript Free are documented here.
 - **Configuraciones de ejemplo** (`pc_agent_config.example.json`,
   `pc_agent_config.restricted.example.json`, `despertar_config.example.json`)
   para publicar el repo sin rutas reales de ningún PC.
+
+### Changed — renombrado de la carpeta (18-nov-2026)
+- **La carpeta del proyecto pasa a `ZeroScriptModify`.** `start.bat`,
+  `bridge_segundo_plano.vbs`, el VBS de Inicio del vigilante y las
+  configuraciones de los clientes MCP (OpenCode, Claude Desktop,
+  Antigravity) apuntan a la ruta nueva. Como el manifest no declara `key`, el
+  ID de la extensión cambia con la ruta: el valor fijado ahora es
+  `jgigjkahlhhfcmbnlbmbbcdpeljdkidp`, y la extensión debe quitarse y volver a
+  cargarse desde `zeroscript-extension`.
 
 ### Changed — preparación de la alfa
 - **Rechazo de conexiones sin cabecera `Origin`.** El bridge ya no acepta

@@ -23,7 +23,7 @@ library, so there is nothing to `pip install`.
 Open a terminal in the ZeroScript folder:
 
 ```bat
-cd "C:\path\to\ZeroScript-Free-1.5.5"
+cd "C:\path\to\ZeroScriptModify"
 py -3 pc_agent_mcp.py --version
 py -3 pc_agent_mcp.py --check
 ```
@@ -89,7 +89,7 @@ Merge this into the file (keep any existing `mcpServers` entries):
   "mcpServers": {
     "zeroscript-pc": {
       "command": "C:\\path\\to\\Python\\python.exe",
-      "args": ["C:\\path\\to\\ZeroScript-Free-1.5.5\\pc_agent_mcp.py"],
+      "args": ["C:\\path\\to\\ZeroScriptModify\\pc_agent_mcp.py"],
       "env": {
         "ZS_PC_AGENT_NAME": "claude"
       }
@@ -132,14 +132,14 @@ Look for the `mcp-server-zeroscript-pc` log if the server does not appear.
 The quickest route is the CLI, from the project where you want the tools:
 
 ```bat
-opencode mcp add zeroscript-pc --env ZS_PC_AGENT_NAME=opencode -- "C:\path\to\Python\python.exe" "C:\path\to\ZeroScript-Free-1.5.5\pc_agent_mcp.py"
+opencode mcp add zeroscript-pc --env ZS_PC_AGENT_NAME=opencode -- "C:\path\to\Python\python.exe" "C:\path\to\ZeroScriptModify\pc_agent_mcp.py"
 opencode mcp list
 ```
 
 Add `--global` to make it available in every project:
 
 ```bat
-opencode mcp add zeroscript-pc --global --env ZS_PC_AGENT_NAME=opencode -- "C:\path\to\Python\python.exe" "C:\path\to\ZeroScript-Free-1.5.5\pc_agent_mcp.py"
+opencode mcp add zeroscript-pc --global --env ZS_PC_AGENT_NAME=opencode -- "C:\path\to\Python\python.exe" "C:\path\to\ZeroScriptModify\pc_agent_mcp.py"
 ```
 
 Or edit `opencode.json` / `opencode.jsonc` directly. V2 stores servers under
@@ -154,7 +154,7 @@ Or edit `opencode.json` / `opencode.jsonc` directly. V2 stores servers under
         "type": "local",
         "command": [
           "C:\\path\\to\\Python\\python.exe",
-          "C:\\path\\to\\ZeroScript-Free-1.5.5\\pc_agent_mcp.py"
+          "C:\\path\\to\\ZeroScriptModify\\pc_agent_mcp.py"
         ],
         "environment": {
           "ZS_PC_AGENT_NAME": "opencode"
@@ -202,7 +202,7 @@ optional `timeoutSeconds`:
   "mcpServers": {
     "zeroscript-pc": {
       "command": "C:\\path\\to\\Python\\python.exe",
-      "args": ["C:\\path\\to\\ZeroScript-Free-1.5.5\\pc_agent_mcp.py"],
+      "args": ["C:\\path\\to\\ZeroScriptModify\\pc_agent_mcp.py"],
       "timeoutSeconds": 660
     }
   }
@@ -229,7 +229,7 @@ Most clients accept an `mcpServers` object with `command`, `args` and optional
   "mcpServers": {
     "zeroscript-pc": {
       "command": "C:\\path\\to\\Python\\python.exe",
-      "args": ["C:\\path\\to\\ZeroScript-Free-1.5.5\\pc_agent_mcp.py"],
+      "args": ["C:\\path\\to\\ZeroScriptModify\\pc_agent_mcp.py"],
       "env": {
         "ZS_PC_AGENT_NAME": "zeroscript"
       }
@@ -546,7 +546,7 @@ dedicated JSON file:
 
 ```json
 "env": {
-  "ZS_PC_CONFIG": "C:\\path\\to\\ZeroScript-Free-1.5.5\\pc_agent_config.strict.json"
+  "ZS_PC_CONFIG": "C:\\path\\to\\ZeroScriptModify\\pc_agent_config.strict.json"
 }
 ```
 
