@@ -3,3 +3,6 @@
 # Windows (autocrlf), so pin these explicitly.
 *.command text eol=lf
 *.sh       text eol=lf
+# Windows batch files MUST keep CRLF: cmd.exe mis-parses goto/call labels in LF files.
+*.bat     text eol=crlf
+*.cmd     text eol=crlf

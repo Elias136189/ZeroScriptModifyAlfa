@@ -38,3 +38,6 @@ pc_agent_config.restricted.json
 Thumbs.db
 desktop.ini
 __pycache__/
+
+# Accesos directos de Windows (rutas personales)
+*.lnk
