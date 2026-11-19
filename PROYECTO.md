@@ -69,7 +69,7 @@ El bridge lanza su propio `pc_agent_mcp.py` con la identidad por defecto `zerosc
 | `bridge_segundo_plano.vbs` | Lanza `bridge.py` oculto con doble clic (`py -3`, salida en `logs\bridge_stdout.log`), con `ZS_BRIDGE_EXTENSION_ID` fijado a la extensión instalada. No lanza otro si el puerto 17613 ya está en uso. Alternativa a `start.bat`: este no arranca el chat local |
 | `despertar.txt` | Copia de `despertar.py` (647 líneas, 24 KB) guardada con extensión `.txt`; no la usa ningún archivo |
 | `patch_claude1.py` | Parche antiguo ya aplicado (obsoleto, ver sección 10) |
-| `README.txt`, `MCP_CLIENTS.md`, `CHANGELOG.md` | Documentación original en inglés |
+| `README.md`, `README-ALPHA.md`, `MCP_CLIENTS.md`, `CHANGELOG.md` | Documentación (el `README.txt` original se sustituyó por `README.md` en GitHub el 18-nov-2026; `INFORME_CODIGO_MCP.md` se eliminó del repositorio y queda solo como copia local ignorada) |
 | `assets\` | Icono y banner del README |
 | `backups\` | Copias hechas antes de cambios (archivos `.antes-*` y la carpeta `arreglos-20261114-212149`) |
 | `logs\` | `start.log`, `bridge_debug.log`, `despertar.log`, `pc_agent_mcp_*.log`, `vigilante_cambios.pid` y `registro_cambios\` (registros semanales del vigilante, con autor) |
