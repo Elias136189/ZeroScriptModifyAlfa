@@ -57,9 +57,11 @@ import json
 import os
 import platform
 import re
+import shutil
 import string
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -112,17 +114,6 @@ SUPPORTED_PROTOCOL_VERSIONS = {
 }
 
 DEFAULT_AGENT_NAME = "zeroscript"
-
-
-def _safe_filename_part(value: str, fallback: str = "unknown", max_len: int = 48) -> str:
-    """Turn an agent name or id into a filename-safe component.
-
-    Message filenames are generated from ``from`` and a short id, so neither
-    may contain path separators, quotes or control characters. The full values
-    stay untouched inside the JSON payload.
-    """
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "")).strip("._-")
-    return (cleaned[:max_len] or fallback)
 
 
 DEFAULTS: dict[str, Any] = {
@@ -569,7 +560,8 @@ def truncate(text: str) -> str:
     return text[:limit] + f"\n... [truncated: {len(text) - limit} more characters]"
 
 
-def read_text_file(path: Path) -> str:
+def _read_text_with_meta(path: Path) -> tuple[str, str, bool]:
+    """Read a text file and report how it was encoded: (text, encoding, had_utf8_bom)."""
     size = path.stat().st_size
     if size > CFG["max_read_bytes"]:
         raise ValueError(
@@ -579,12 +571,72 @@ def read_text_file(path: Path) -> str:
     data = path.read_bytes()
     if b"\x00" in data[:8192]:
         raise ValueError("file looks binary (contains NUL bytes); use pc_shell to inspect it")
-    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+    had_bom = data.startswith(b"\xef\xbb\xbf")
+    for encoding in ("utf-8", "cp1252", "latin-1"):
         try:
-            return data.decode(encoding)
+            if encoding == "utf-8" and had_bom:
+                return data[3:].decode("utf-8"), "utf-8", True
+            return data.decode(encoding), encoding, False
         except UnicodeDecodeError:
             continue
-    return data.decode("utf-8", errors="replace")
+    return data.decode("utf-8", errors="replace"), "utf-8", False
+
+
+def read_text_file(path: Path) -> str:
+    return _read_text_with_meta(path)[0]
+
+
+def _encode_text(text: str, encoding: str, had_bom: bool) -> tuple[bytes, bool]:
+    """Encode text with the file's original encoding (and UTF-8 BOM).
+
+    Falls back to UTF-8 when the original encoding cannot represent the text.
+    Returns (data, kept_original_encoding).
+    """
+    try:
+        data = text.encode(encoding)
+    except UnicodeEncodeError:
+        return text.encode("utf-8"), False
+    if encoding == "utf-8" and had_bom:
+        data = b"\xef\xbb\xbf" + data
+    return data, True
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write through a temp file in the same folder and os.replace it into place.
+
+    A crash, a full disk or a killed process then leaves either the old file or
+    the new one, never a half-written file. If no temp file can be created here
+    or the target cannot be replaced, it falls back to a plain in-place write.
+    """
+    try:
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.zs-", suffix=".tmp", dir=str(path.parent))
+    except OSError:
+        path.write_bytes(data)
+        return
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.exists():
+            try:
+                shutil.copymode(path, tmp_name)
+            except OSError:
+                pass
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    try:
+        os.replace(tmp_name, path)
+    except OSError:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        path.write_bytes(data)
 
 
 def is_probably_text(path: Path) -> bool:
@@ -689,8 +741,9 @@ def tool_write(args: dict[str, Any]) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
     elif not path.parent.exists():
         raise FileNotFoundError(f"parent directory does not exist: {path.parent}")
-    path.write_text(content, encoding="utf-8", newline="")
-    return f"Wrote {len(content.encode('utf-8'))} bytes to {display_path(path)}"
+    data = content.encode("utf-8")
+    _atomic_write_bytes(path, data)
+    return f"Wrote {len(data)} bytes to {display_path(path)}"
 
 
 def tool_edit(args: dict[str, Any]) -> str:
@@ -705,8 +758,25 @@ def tool_edit(args: dict[str, Any]) -> str:
         raise ValueError("old_string must not be empty; use pc_write to create or fully rewrite a file")
     if old == new:
         raise ValueError("old_string and new_string are identical")
-    text = read_text_file(path)
+    text, encoding, had_bom = _read_text_with_meta(path)
+    # pc_read shows lines without their \r, so the model sends "\n". When the file
+    # uses CRLF, match and insert with CRLF: multi-line edits then work and the
+    # file does not end up with mixed line endings.
+    crlf = text.count("\r\n")
+    file_is_crlf = crlf > 0 and crlf >= text.count("\n") - crlf
+
+    def _to_file_eol(value: str) -> str:
+        if file_is_crlf and "\n" in value and "\r\n" not in value:
+            return value.replace("\n", "\r\n")
+        return value
+
     count = text.count(old)
+    if count == 0 and file_is_crlf:
+        adapted = _to_file_eol(old)
+        if adapted != old:
+            count = text.count(adapted)
+            if count:
+                old = adapted
     if count == 0:
         raise ValueError(
             "old_string was not found in the file. Read it with pc_read first and copy the text exactly "
@@ -717,9 +787,11 @@ def tool_edit(args: dict[str, Any]) -> str:
         raise ValueError(
             f"old_string occurs {count} times. Include more surrounding context or set replace_all=true."
         )
-    updated = text.replace(old, new, -1 if replace_all else 1)
-    path.write_text(updated, encoding="utf-8", newline="")
-    return f"Edited {display_path(path)}: replaced {count if replace_all else 1} occurrence(s)"
+    updated = text.replace(old, _to_file_eol(new), -1 if replace_all else 1)
+    data, kept_encoding = _encode_text(updated, encoding, had_bom)
+    _atomic_write_bytes(path, data)
+    note = "" if kept_encoding else " (file re-encoded as UTF-8: its original encoding cannot hold the new text)"
+    return f"Edited {display_path(path)}: replaced {count if replace_all else 1} occurrence(s){note}"
 
 
 def _glob_parts_match(pattern_parts: list[str], path_parts: list[str]) -> bool:
