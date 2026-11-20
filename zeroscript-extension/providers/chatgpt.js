@@ -30,10 +30,10 @@
 //    data-testid="stop-button" is present for the ENTIRE generation (including
 //    any reasoning phase) - a reliable single signal, like Gemini's stop icon.
 //  - Fenced code blocks render as ONE outer <pre> inside .markdown (holding the
-//    language label + copy bar + the code). A FENCED ###LUA###…###END_LUA### /
+//    language label + copy bar + the code). A FENCED ###MCP_TOOL### /
 //    JSON command block is therefore one atomic <pre>, and hiding it is simple.
-//    But the model does not always fence it: seen live 2026-08, a 208-line
-//    ###LUA### block written as plain prose was rendered as 68 SIBLING nodes
+//    But the model does not always fence it: a long command block written as
+//    plain prose can be rendered as SIBLING nodes
 //    (<p> for the flush lines, <pre> for the indented ones), and only the first
 //    carried the marker - so a per-element match hid the opener and left the
 //    whole script on screen. findToolBlockSpot hides the marker-to-marker RANGE
@@ -125,15 +125,13 @@ const ZSProvider = (() => {
   // with CodeMirror - <div class="cm-content"> holding ONE <div class="cm-line">
   // per line - and there is not a single "\n" text node in the whole block.
   // textContent therefore returns the entire script glued onto ONE line:
-  //   "###LUA###local total = 0local count = 1000for i = 1, count do…"
+  //   "###MCP_TOOL###{\"command\":\"multi_edit\"}..."
   // Measured live 2026-08 on a 479-line block: textContent 8917 chars with 0
   // newlines; joining the .cm-line children gave 9395 chars, both markers intact
   // (CodeMirror renders every line here - no viewport virtualization observed,
   // checked up to 479 lines). That collapse is what broke MOST tool calls in a
-  // real session: the core's parser saw the opening marker fused to the first
-  // statement and reported "Failed to parse command code / your code block was
-  // empty", and on the runs that did execute, Roblox reported every error at
-  // "AssistantCommand:1" because the whole script really was one line.
+  // real session: the core's parser saw the opening marker fused to the payload
+  // and reported a parse error because the command really was one line.
   // So: emit a newline for every cm-line (even an empty one - blank lines must
   // survive or reported line numbers shift), for <br>, and at block boundaries
   // (which also gives the unfenced-prose shape a usable line structure).
@@ -772,10 +770,10 @@ const ZSProvider = (() => {
   //
   // Why ChatGPT needs the image rule and the others don't: ChatGPT reaches for
   // its own image GENERATION on any turn that carries an image, and answers by
-  // producing a new picture instead of doing the Roblox work the image was
+  // producing a new picture instead of doing the work the image was
   // meant to illustrate. Its native image tool also runs in the sandbox that
   // cannot touch the user's project, so a generated image is a dead end here.
-  const PROMPT_EXTRA = `- WHEN THE USER SENDS AN IMAGE: by default it is REFERENCE MATERIAL for the work they want done in their project - a screenshot of a bug, a mockup of the UI they want, a photo of the thing to build, a picture of what is wrong in Studio. Look at it, use it to understand what they want, and then do that work with the ZeroScript commands. Do NOT generate a new image from it, and do NOT treat it as an image-editing request. Only generate an image when the user EXPLICITLY asks you to create, generate, draw or edit one ("make me an image of...", "generate a texture", "edit this picture"). If what they want from the image is genuinely unclear, ask them in one short sentence rather than guessing - and never guess "they want a picture".`;
+  const PROMPT_EXTRA = `- WHEN THE USER SENDS AN IMAGE: by default it is REFERENCE MATERIAL for the work they want done in their project - a screenshot of a bug, a mockup of the UI they want, a photo of the thing to build, or a picture of the issue. Look at it, use it to understand what they want, and then do that work with the ZeroScript commands. Do NOT generate a new image from it, and do NOT treat it as an image-editing request. Only generate an image when the user EXPLICITLY asks you to create, generate, draw or edit one ("make me an image of...", "generate a texture", "edit this picture"). If what they want from the image is genuinely unclear, ask them in one short sentence rather than guessing - and never guess "they want a picture".`;
 
   // ── User-send interception ────────────────────────────────────────────────
   function installSendHooks(handlers) {
@@ -835,18 +833,18 @@ const ZSProvider = (() => {
 
   // ── Tool-block location for camouflage ────────────────────────────────────
   // ChatGPT wraps each fenced code block in ONE <pre> inside .markdown (markers
-  // and JSON survive intact in textContent), so a whole ###LUA###…###END_LUA###
+  // and JSON survive intact in textContent), so a whole ###MCP_TOOL###…###END_MCP_TOOL###
   // or JSON command block is one atomic <pre>. Hide every <pre> in the reply
   // whose text carries a command shape, plus any bare top-level paragraph that
   // holds an inline command (the model is told to use code blocks, but this
   // catches a stray inline one). React re-creates these nodes on every token, so
   // - like Gemini - we also mark the .markdown container with .zs-cmd-mask; the
   // overlay.css rule keeps every recreated <pre> hidden with no flash.
-  const CMD_SHAPE = /"(?:command|tool)"\s*:\s*"|###\s*lua|###mcp_tool###/i;
+  const CMD_SHAPE = /"(?:command|tool)"\s*:\s*"|###\s*mcp_tool\s*###/i;
   // Marker pair, for the UNFENCED case below. Kept separate from CMD_SHAPE so the
   // opener test can't also match the closer.
-  const CMD_OPEN = /###\s*(?:LUA|MCP_TOOL)\s*###/i;
-  const CMD_CLOSE = /###\s*END_(?:LUA|MCP_TOOL)\s*###/i;
+  const CMD_OPEN = /###\s*MCP_TOOL\s*###/i;
+  const CMD_CLOSE = /###\s*END_MCP_TOOL\s*###/i;
 
   function findToolBlockSpot(item /*, chip */) {
     const replies = [...item.querySelectorAll(S.reply)];
@@ -870,7 +868,7 @@ const ZSProvider = (() => {
         if (t.length < 600 && CMD_SHAPE.test(t)) hide(el, null);
       });
       // 3. UNFENCED command block spanning MANY siblings. Seen live 2026-08: the
-      // model wrote ###LUA###…###END_LUA### as plain prose instead of a fenced
+      // model wrote ###MCP_TOOL###…###END_MCP_TOOL### as plain prose instead of a fenced
       // block, so ChatGPT's markdown renderer split a 208-line payload into 68
       // sibling <p>/<pre> nodes. Only the first one carries the marker, so the
       // per-element tests above hid the opener and left the whole script on

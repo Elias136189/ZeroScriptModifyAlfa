@@ -97,8 +97,8 @@ const ZSProvider = (() => {
       if (n.matches && n.matches(skip)) return;
       // GLM renders fenced code in a CodeMirror editor whose lines are separate
       // <div class="cm-line"> with NO newline text nodes, so textContent collapses
-      // the whole block onto ONE line - which breaks Lua (a `--` then comments out
-      // the rest) and any multi-line command. Rebuild the real source by joining
+      // the whole block onto ONE line, corrupting source text and multi-line
+      // commands. Rebuild the real source by joining
       // the cm-line elements with "\n" (and skip the .cm-announced a11y duplicate).
       if (n.matches && n.matches(".cm-editor, .cm-content")) {
         const lines = n.querySelectorAll(".cm-line");
@@ -523,7 +523,7 @@ const ZSProvider = (() => {
   // command shape AND mark the reply root (`.chat-assistant`, which keeps its
   // identity) with .zs-cmd-mask so a CSS rule re-hides recreated wrappers with
   // zero flash. Also catch a stray bare inline command paragraph.
-  const CMD_SHAPE = /"(?:command|tool)"\s*:\s*"|###\s*lua|###mcp_tool###/i;
+  const CMD_SHAPE = /"(?:command|tool)"\s*:\s*"|###\s*mcp_tool\s*###/i;
   function findToolBlockSpot(item /*, chip */) {
     if (!item) return null;
     let hidAny = null;

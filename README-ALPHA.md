@@ -30,10 +30,6 @@ un bus para que varias IAs colaboren entre sí:
 - **Extensión** (`zeroscript-extension/`): inyecta el agente en ChatGPT,
   DeepSeek, Gemini, Kimi, GLM, Qwen, Arena y Meta AI.
 
-Roblox Studio es un complemento opcional del original; esta copia arranca
-como agente de PC y el servidor de Roblox se añade desde el menú de la
-extensión si se necesita.
-
 ## Requisitos
 
 - Windows 10/11.

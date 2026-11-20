@@ -27,10 +27,10 @@
 //        "JSONTreeRaw▶{...}"; the {...} braces stay intact and the prefix has no
 //        braces, so the parser's brace-matched extractToolAnywhere reads a JSON
 //        command with NO special handling.
-//    (b) a plain ``` fenced block (used for the ###LUA### execute_luau form) is a
+//    (b) a plain ``` fenced block is a
 //        real <pre><code> whose lines are separate <span class="block …counter…">
 //        with NO newline text nodes → textContent COLLAPSES onto one line, which
-//        would break multi-line Lua. textWithout() special-cases <pre> and joins
+//        would break multi-line source text. textWithout() special-cases <pre> and joins
 //        its line spans with "\n" to rebuild the source (same fix class as GLM's
 //        .cm-line / Qwen's Monaco).
 //  - IMPORTANT (viability): Meta AI's guardrail REFUSES to emit command JSON when
@@ -178,7 +178,7 @@ const ZSProvider = (() => {
   // Walk the tree skipping the core's chip, the reasoning blocks, and any extra
   // excluded subtree. A <pre> is special-cased: Meta renders each code line as a
   // block <span> with NO newline text node, so plain textContent collapses the
-  // block onto one line (breaks multi-line Lua). Rebuild it by joining the code
+  // block onto one line (breaks multi-line content). Rebuild it by joining the code
   // element's line children with "\n".
   function textWithout(root, excludeSel) {
     if (!root) return "";
@@ -192,7 +192,7 @@ const ZSProvider = (() => {
       // .ur-code-block with a JSON/Tree/Raw toolbar and a collapsible tree), NOT
       // a <pre>. In its Tree view it injects a ▶/▼ expander glyph BEFORE every
       // nested object/array key - and those glyphs land INSIDE the braces, e.g.
-      // `{"command":"get_studio_state",▶"params":{}}`. That corrupted JSON made
+      // `{"command":"list_items",▶"params":{}}`. That corrupted JSON made
       // JSON.parse fail → a "bad JSON" parse_error every time the model emitted a
       // command with a nested object, then it retried, re-rendered, and failed
       // again (the reported spam). Detect the viewer (a .ur-code-block with no
@@ -707,7 +707,7 @@ const ZSProvider = (() => {
   // subtree on stream settle and on the next send, so also mark the assistant body
   // (its identity survives) with .zs-cmd-mask; the overlay.css rule keeps recreated
   // code wrappers hidden.
-  const CMD_SHAPE = /"(?:command|tool)"\s*:\s*"|###\s*lua|###mcp_tool###/i;
+  const CMD_SHAPE = /"(?:command|tool)"\s*:\s*"|###\s*mcp_tool\s*###/i;
   function findToolBlockSpot(item /*, chip */) {
     const b = bodyOf(item);
     if (!b) return null;
@@ -732,10 +732,10 @@ const ZSProvider = (() => {
       if (el.querySelector(S.codeWrap)) return;
       const t = (el.textContent || "").trim();
       // A block that STARTS with the command JSON / marker is a command no
-      // matter its size (execute_luau payloads run thousands of chars); the
+      // matter its size (large command payloads can run thousands of chars); the
       // 600-char cap only guards blocks where the shape appears mid-text.
       const t0 = t.replace(/^json\s*/i, "");
-      const startsAsCmd = /^\{\s*"(?:command|tool)"\s*:/.test(t0) || /^###\s*(?:lua|mcp_tool)/i.test(t0);
+      const startsAsCmd = /^\{\s*"(?:command|tool)"\s*:/.test(t0) || /^###\s*mcp_tool/i.test(t0);
       if ((startsAsCmd || t.length < 600) && CMD_SHAPE.test(t) && /^[{#]/.test(t0)) {
         el.classList.add("zs-tool-hide");
         hidAny = hidAny || { parent: el.parentElement, ref: el };

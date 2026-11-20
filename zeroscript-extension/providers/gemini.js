@@ -611,8 +611,8 @@ const ZSProvider = (() => {
 
   // ── Tool-block location for camouflage ────────────────────────────────────
   // Gemini wraps each fenced code block in a <code-block> element (markers and
-  // JSON survive intact in textContent), and a whole ###LUA###…###END_LUA### or
-  // ###MCP_TOOL### block is ONE atomic code-block. So hiding is simple and
+  // JSON survive intact in textContent), and a whole ###MCP_TOOL### block is
+  // ONE atomic code-block. So hiding is simple and
   // robust: hide every <code-block> in the reply whose text carries a command
   // shape, plus any bare top-level paragraph that holds an inline command (the
   // model is told to use code blocks, but this catches a stray inline one).
@@ -620,7 +620,7 @@ const ZSProvider = (() => {
   // a code-block, so hiding the wrapper then fails. The core anchors the chip at
   // the turn level (chipAtItemLevel), so the returned position is unused; this
   // function's real job is applying the .zs-tool-hide classes correctly.
-  const CMD_SHAPE = /"(?:command|tool)"\s*:\s*"|###\s*lua|###mcp_tool###/i;
+  const CMD_SHAPE = /"(?:command|tool)"\s*:\s*"|###\s*mcp_tool\s*###/i;
   function findToolBlockSpot(item /*, chip */) {
     const replies = [...item.querySelectorAll(S.reply)].filter((m) => !m.closest(S.thinking));
     let hidAny = null;
@@ -665,7 +665,7 @@ const ZSProvider = (() => {
     // Reasoning-area selector, exported so the CORE's raw-command-visible probes
     // exclude it (same fix as DeepSeek): Gemini's thinking models (2.5 Pro/Flash)
     // render their reasoning in <model-thoughts> and often QUOTE the command
-    // JSON/###LUA### there. The camouflage never hides that quote (by design), so
+    // JSON/###MCP_TOOL### there. The camouflage never hides that quote (by design), so
     // without this exclusion the core reads it as "raw block still visible"
     // forever - the chip then FLAPS done→run→done and rebuilds on every sweep.
     thinkingSel: S.thinking,
@@ -690,7 +690,7 @@ const ZSProvider = (() => {
     // Gemini drifts away from emitting tool blocks after a while in long
     // sessions - observed live, model behavior, not something the prompt fixes.
     unstableWarning:
-      "Gemini tends to stop using the Roblox tools after a while in long sessions (model behavior, not the extension). " +
+      "Gemini tends to stop using the ZeroScript commands after a while in long sessions (model behavior, not the extension). " +
       "If it starts answering in plain text instead of acting, remind it to use the commands - or start a new session.",
     init({ diag: d } = {}) { if (d) diag = d; },
     // turns

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ZeroScript Free × AI Agent for your PC",
   "version": "2.2.0",
-  "description": "Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into an agent for your own computer: read/write files, search them and run commands through a local bridge. Roblox Studio is supported as an optional addon.",
+  "description": "Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into an agent for your own computer: read/write files, search them and run commands through a local bridge.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://chat.deepseek.com/*",

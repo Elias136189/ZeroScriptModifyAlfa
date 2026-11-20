@@ -77,7 +77,6 @@ Config file:
 
 - Windows installer: `%APPDATA%\Claude\claude_desktop_config.json`
 - Windows **Microsoft Store**: `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc\claude_desktop_config.json` (if the package folder differs, search for `claude_desktop_config.json` under `%LOCALAPPDATA%\Claude-Data`)
-- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 When available, **Developer > Edit Config** in Claude Desktop opens the file
 the app actually reads. Use that instead of guessing the path.
@@ -112,7 +111,7 @@ disappear. After reopening, open the tools/connectors menu in the chat and make
 sure `zeroscript-pc` is enabled; a connected server still has to be enabled for
 that conversation. Claude asks before each call by default.
 
-Logs: `%APPDATA%\Claude\logs\` (macOS: `~/Library/Logs/Claude/`). For the
+Logs: `%APPDATA%\Claude\logs\`. For the
 Microsoft Store build, look in
 `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\Claude\logs\`.
 Look for the `mcp-server-zeroscript-pc` log if the server does not appear.

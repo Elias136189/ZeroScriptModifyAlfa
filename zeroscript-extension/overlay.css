@@ -225,7 +225,7 @@ html.zs-light #zs-unstable {
   box-shadow: 0 2px 12px rgba(99, 102, 241, 0.45);
 }
 #zs-action[data-kind="start"]:hover { filter: brightness(1.08); }
-/* Degraded start: Roblox is down but another MCP server is live. Amber to signal
+/* Degraded start: the PC agent is down but another MCP server is live. Amber to signal
    "startable, but not the full setup" - distinct from the blue full-ready start. */
 #zs-action[data-kind="start-degraded"] {
   background: linear-gradient(135deg, #d97706, #f59e0b); color: #fff; border-color: transparent;
@@ -402,7 +402,7 @@ button.zs-site-opt:hover .zs-site-go { opacity: 1; transform: translateX(0); }
 .zs-mcp-health-on { background: #34d399; box-shadow: 0 0 5px rgba(52, 211, 153, 0.5); }
 .zs-mcp-health-off { background: #f87171; }
 .zs-mcp-health-unknown { background: #6b7280; }
-/* Roblox: always first, greyed out - no health dot (own status lives in the
+/* The PC agent is always first, greyed out - no health dot (own status lives in the
    main ZeroScript dot) and no remove button (protected bridge-side too). */
 .zs-mcp-item-primary { opacity: 0.55; background: rgba(255, 255, 255, 0.02); }
 .zs-mcp-item-primary .zs-mcp-name { font-weight: 500; }
@@ -516,7 +516,7 @@ message-content.zs-cmd-mask code-block { display: none !important; }
    container keeps its identity, so the provider marks IT with .zs-cmd-mask and
    this rule keeps every recreated <pre> hidden with no flash. Inert elsewhere. */
 .markdown.zs-cmd-mask pre { display: none !important; }
-/* ChatGPT, UNFENCED command block: when the model writes ###LUA###…###END_LUA###
+/* ChatGPT, UNFENCED command block: when the model writes ###MCP_TOOL###…###END_MCP_TOOL###
    as plain prose instead of a fenced block, the renderer splits it into dozens of
    sibling <p>/<pre> nodes (seen live 2026-08: 68 of them for a 208-line payload).
    The rule above only re-hides recreated <pre>, so the <p> half of that range

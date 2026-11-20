@@ -5,8 +5,8 @@
 // that carry ZeroScript commands) in a Monaco editor that DISPOSES off-screen
 // blocks - collapsing them to their first line - and can drop the final complete
 // frame for short/fast blocks. Reading the command back from the DOM is therefore
-// unreliable (a `{"command":...}` becomes just `{`, a 50-line execute_luau becomes
-// just `###LUA###`), which made the agent loop hang (opener with no closer) and
+// unreliable (a `{"command":...}` becomes just `{`, a long MCP block becomes
+// just `###MCP_TOOL###`), which made the agent loop hang (opener with no closer) and
 // fail to parse. The streamed API response, by contrast, carries the assistant's
 // RAW markdown verbatim. This script taps it and republishes the reconstructed
 // text so providers/qwen.js can read commands from a source Monaco can't corrupt.
@@ -52,8 +52,8 @@
       if (d.phase === "answer" && typeof d.content === "string") acc.text += d.content;
       // Do NOT treat delta.status==="finished" as the turn's end. Qwen (fe 0.2.73)
       // now emits `status:"finished"` ~12s BEFORE the SSE stream actually closes,
-      // and the rest of the answer (including a command's closing marker, e.g.
-      // ###END_LUA###) keeps streaming afterwards. Trusting it flipped `done` early,
+      // and the rest of the answer (including the command's closing marker)
+      // keeps streaming afterwards. Trusting it flipped `done` early,
       // so the content script fired the still-incomplete command mid-stream and
       // injected a "Bad JSON / unclosed" feedback while Qwen was still writing.
       // The true end is the stream closing (`[DONE]`, or the reader ending in

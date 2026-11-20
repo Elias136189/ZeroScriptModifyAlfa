@@ -13,8 +13,6 @@ Mensajero (despertar.py): despierta a una IA cuando un mensaje lleva @despertar.
 Vigilante de cambios (vigilante_cambios.py): registra quién crea, modifica, mueve o borra archivos y carpetas del proyecto.
 Chat local (chat-local/): interfaz web en http://127.0.0.1:8765.
 Extensión (zeroscript-extension/): inyecta el agente en ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena y Meta AI.
-Roblox Studio es un complemento opcional del original; esta copia arranca como agente de PC y el servidor de Roblox se añade desde el menú de la extensión si se necesita.
-
 Requisitos
 Windows 10/11.
 Python 3.9 o superior (con pip).

@@ -711,12 +711,12 @@ const ZSProvider = (() => {
   // a command shape AND mark the assistant turn (.segment-assistant, which keeps
   // its identity) with .zs-cmd-mask so the overlay.css rule re-hides recreated
   // wrappers with zero flash. Also catch a stray bare inline command paragraph.
-  const CMD_SHAPE = /"(?:command|tool)"\s*:\s*"|###\s*lua|###mcp_tool###/i;
+  const CMD_SHAPE = /"(?:command|tool)"\s*:\s*"|###\s*mcp_tool\s*###/i;
   // A block whose text STARTS with a command (optionally behind a ```json fence).
   // Used to hide a command Kimi rendered as a nested <div class="paragraph"> at
   // ANY length - the length-capped direct-children pass misses those on two
   // counts (nesting + a big inline command over the cap).
-  const STARTS_CMD = /^\s*(?:```(?:json)?\s*)?(?:\{?\s*"(?:command|tool)"\s*:|###\s*lua|###mcp_tool###)/i;
+  const STARTS_CMD = /^\s*(?:```(?:json)?\s*)?(?:\{?\s*"(?:command|tool)"\s*:|###\s*mcp_tool\s*###)/i;
   function findToolBlockSpot(item /*, chip */) {
     const md = bodyEl(item);
     if (!md) return null;
@@ -790,11 +790,11 @@ const ZSProvider = (() => {
     reliableCounts: true,
     // Shown as a permanent, non-intrusive notice in the ZeroScript panel.
     // Kimi sometimes reaches for its OWN built-in/native tools (web search, code
-    // runner, etc.) instead of emitting the ZeroScript command blocks that drive
-    // Roblox Studio - model behavior, not something the prompt fully prevents.
+    // runner, etc.) instead of emitting ZeroScript command blocks - model behavior,
+    // not something the prompt fully prevents.
     unstableWarning:
-      "Kimi sometimes uses its own native tools instead of the Roblox commands (model behavior, not the extension). " +
-      "If it stops acting in Roblox Studio and answers in plain text or runs its own tools, remind it to use the ZeroScript commands - or start a new session.",
+      "Kimi sometimes uses its own native tools instead of ZeroScript commands (model behavior, not the extension). " +
+      "If it stops acting and answers in plain text or runs its own tools, remind it to use the ZeroScript commands - or start a new session.",
     init({ diag: d } = {}) { if (d) diag = d; },
     // turns
     allItems, isUserItem, isAssistantItem, itemText, classifyText,

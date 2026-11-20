@@ -16,9 +16,7 @@ Revisa:
   5. Que existan los archivos imprescindibles.
   6. Que `ZS_BRIDGE_EXTENSION_ID` en los lanzadores coincida con el ID que
      Chrome deriva de la ruta actual (la carpeta puede cambiar de nombre).
-  7. Que la extension siga siendo la del agente de PC (y no la version
-     original solo para Roblox Studio): sin esto las pruebas de la extension
-     pasan igualmente, porque no cubren las herramientas pc_*.
+  7. Que la extension siga incluyendo las herramientas del agente de PC.
   8. Que los .bat/.cmd usen finales de linea CRLF (cmd.exe falla con goto/call
      de etiquetas en archivos LF).
 
@@ -43,7 +41,6 @@ PY_FILES = [
     "despertar.py",
     "vigilante_cambios.py",
     "limpiar_buzon.py",
-    "launch_studio_mcp.py",
     "chat-local/server.py",
     "comprobar_proyecto.py",
 ]
@@ -164,18 +161,7 @@ def revisar_id_extension():
 
 
 def revisar_extension_agente_pc():
-    """La extension debe ser la del agente de PC, no la original de Roblox 1.5.5."""
-    manifest = ROOT / "zeroscript-extension/manifest.json"
-    if manifest.exists():
-        try:
-            data = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            data = {}
-        if "Roblox Studio Agent" in str(data.get("name", "")):
-            PROBLEMAS.append(
-                "zeroscript-extension/manifest.json es el de la version original "
-                "'Roblox Studio Agent': la extension del agente de PC fue sobrescrita"
-            )
+    """La extension debe incluir las herramientas del agente de PC."""
     esperados = {
         "zeroscript-extension/core/main.js": "confirmPc",
         "zeroscript-extension/core/config.js": "pc_shell",
@@ -190,8 +176,8 @@ def revisar_extension_agente_pc():
             continue
         if marca not in texto:
             PROBLEMAS.append(
-                f"{rel}: falta '{marca}'; parece la version original solo para Roblox "
-                "(sin herramientas pc_* ni confirmacion previa)"
+                f"{rel}: falta '{marca}'; faltan herramientas del agente de PC "
+                "o la confirmacion previa"
             )
 
 

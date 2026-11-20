@@ -52,7 +52,7 @@ El bridge lanza su propio `pc_agent_mcp.py` con la identidad por defecto `zerosc
 | Ruta | Qué es |
 | --- | --- |
 | `start.bat` | Lanzador principal en Windows: busca Python, instala `websockets`, arranca el chat local y el bridge |
-| `bridge.py` (2245 líneas) | Puente WebSocket <-> servidores MCP; supervisa y reinicia los servidores |
+| `bridge.py` | Puente WebSocket <-> servidores MCP; supervisa y reinicia los servidores |
 | `pc_agent_mcp.py` (1486 líneas) | Servidor MCP por stdio con las 12 herramientas (`pc_*` y `msg_*`) |
 | `pc_agent_mcp.cmd` | Lanzador de `pc_agent_mcp.py` para clientes MCP (busca `py -3` o `python`) |
 | `pc_agent_config.json` | Permisos y límites del agente (workspace, shell, buzón, límites) |
@@ -63,7 +63,6 @@ El bridge lanza su propio `pc_agent_mcp.py` con la identidad por defecto `zerosc
 | `limpiar_buzon.py` | Archiva mensajes leídos con más de N días |
 | `chat-local\` | Página de chat: `server.py`, `chat.html`, `lanzar_chat.ps1`, `iniciar_chat.bat`, `detener_chat.bat`, `ocultar_ventana.ps1` (sin uso) |
 | `zeroscript-extension\` | Extensión de navegador (manifest v3), proveedores y pruebas en Node |
-| `launch_studio_mcp.py` | Lanzador opcional para el MCP de Roblox Studio |
 | `vigilante_cambios.py` / `vigilante_cambios.bat` | Vigilante del sistema de archivos (necesita `watchdog`). **Detenido el 18-nov-2026 al renombrar la carpeta** (se cerraron todos los procesos del proyecto); se arranca con `vigilante_cambios.bat start` o desde el VBS de Inicio. Registra CREATED, MODIFIED, DELETED y MOVED de archivos y carpetas del proyecto en `logs\registro_cambios\cambios_AAAA-Wss.log` (un archivo por semana ISO; columnas: fecha, autor = usuario de Windows, evento, FILE/DIR y ruta relativa). Ignora `__pycache__`, `.git`, `logs`, `backups`, `assets` y `workspace_wake`. Comandos: `run`, `start`, `stop`, `status`, `ver [N]` |
 | `instalar_vigilante.bat` / `desinstalar_vigilante.bat` | La instalación crea `ZeroScript_Vigilante_Cambios.vbs` en la carpeta Inicio del usuario (sin admin; la tarea programada está bloqueada por política en este equipo) para arrancar el vigilante oculto con `pythonw.exe` al iniciar sesión, e instala `watchdog` si falta. `desinstalar_vigilante.bat` detiene el proceso, borra el VBS de Inicio y elimina la tarea programada si existiera (ambos leídos el 18-nov) |
 | `bridge_segundo_plano.vbs` | Lanza `bridge.py` oculto con doble clic (`py -3`, salida en `logs\bridge_stdout.log`), con `ZS_BRIDGE_EXTENSION_ID` fijado a la extensión instalada. No lanza otro si el puerto 17613 ya está en uso. Alternativa a `start.bat`: este no arranca el chat local |
@@ -83,13 +82,11 @@ El bridge lanza su propio `pc_agent_mcp.py` con la identidad por defecto `zerosc
 - Arranca los servidores de `config.json` como procesos hijos por stdio. Un hilo lector por
   servidor, respuestas emparejadas por id de JSON-RPC, stderr drenado, reinicio automático y reintento
   de la llamada fallida.
-- Mensajes que acepta de la extensión: `ping`, `list_tools`, `call_tool`, `studio_status`,
+- Mensajes que acepta de la extensión: `ping`, `list_tools`, `call_tool`,
   `add_server`, `remove_server`, `restart_mcp`.
 - **Control de origen (verificado en `bridge.py:1442-1454`):** rechaza las conexiones sin cabecera `Origin` y solo acepta
   los orígenes `chrome-extension://` / `moz-extension://`. `start.bat` fija `ZS_BRIDGE_EXTENSION_ID` a la extensión instalada, así que en la práctica solo entra esa. No hay token compartido. Se puede fijar una sola extensión con
   `ZS_BRIDGE_EXTENSION_ID` o añadir orígenes con `ZS_BRIDGE_ALLOWED_ORIGINS`.
-- Mucho código es diagnóstico de Roblox Studio (puertos, procesos huérfanos). No se usa mientras
-  `roblox` no esté en `config.json`.
 - Registro en `logs\bridge_debug.log` (se añade siempre, nunca se trunca).
 
 ### 4.2 `pc_agent_mcp.py` (versión 2.3.0)
@@ -249,7 +246,6 @@ como un `pause` inesperado o `No se esperaba . en este momento`. Todo queda en `
 
 - `limpiar_buzon.py`: `py -3 limpiar_buzon.py` (simula) y `--apply` (mueve leídos de más de 30 días;
   nunca mueve no leídos ni borra).
-- `launch_studio_mcp.py`: lanzador opcional para el MCP de Roblox Studio (ver archivo).
 
 ## 5. Flujos principales
 
@@ -300,7 +296,7 @@ y 300 para OpenCode).
 Variables de entorno: `ZS_PC_CONFIG`, `ZS_PC_WORKSPACE`, `ZS_PC_ALLOW_OUTSIDE_WORKSPACE`,
 `ZS_PC_ALLOW_SHELL`, `ZS_PC_SHELL_TIMEOUT_MS`, `ZS_PC_AGENT_NAME`, `ZS_PC_MAILBOX_DIR`,
 `ZS_BRIDGE_PORT`, `ZS_BRIDGE_EXTENSION_ID`, `ZS_BRIDGE_ALLOWED_ORIGINS`,
-`ZS_BRIDGE_ALLOW_ANY_ORIGIN`, `CHAT_LOCAL_PORT`, `CHAT_LOCAL_SCAN_SECONDS`, `ZS_STUDIO_MCP_PATH`.
+`ZS_BRIDGE_ALLOW_ANY_ORIGIN`, `CHAT_LOCAL_PORT`, `CHAT_LOCAL_SCAN_SECONDS`.
 
 Puertos: 17613 (bridge, WebSocket) y 8765 (chat local, HTTP). Ambos solo en 127.0.0.1.
 
@@ -393,7 +389,7 @@ limpieza o detalle.
 | 15 | Baja | Chat local | Cada 3 s pide todos los mensajes (sin paginar). Un mensaje a `todos` se ve como una burbuja por agente. Un agente que haga `msg_send(to="todos")` crea un mensaje sin destinatario real | Paginar o pedir solo lo nuevo; documentar que `todos` es solo de la página |
 | 16 | Baja | Registros | `bridge_debug.log` crece sin rotación (284 KB hoy). `start.log` mezcla codificaciones y se ve con acentos rotos en PowerShell 5.1 | Rotar el log; escribirlo siempre en UTF-8 |
 | 17 | Baja | `background.js:11` | **Resuelto el 18-nov-2026 (renombrado a `BRIDGE_URL`).** Antes: `const URL = ...` ocultaba la clase global `URL` (hoy no se usa como constructor, así que no falla) | Renombrar a `BRIDGE_URL` |
-| 18 | Alta | `zeroscript-extension\` (8 archivos) | **Resuelto el 18-nov-2026.** `manifest.json`, `popup.html`, `popup.js`, `background.js`, `overlay.css`, `README.md`, `core/config.js` y `core/main.js` estaban en la versión original «Roblox Studio Agent 1.5.5» (sin herramientas `pc_*`, sin la confirmación `confirmPc` y con Roblox como servidor principal), mientras que el commit `c05399a` tenía la versión buena del agente de PC. El registro de cambios anota modificaciones de esos archivos a las 21:06 y a las 22:08 del 18-nov, con fecha de archivo de octubre (típico de una copia que conserva fechas). No se ha identificado qué lo causó. Las 45 pruebas de la extensión pasaban igual con las dos versiones, porque no cubren esas partes | Restaurados desde `c05399a`; copia de lo que había en `backups\extension-revertida-20261118`; `comprobar_proyecto.py` ahora lo detecta. Pendiente: recargar la extensión en el navegador |
+| 18 | Alta | `zeroscript-extension\` (8 archivos) | **Resuelto el 18-nov-2026.** `manifest.json`, `popup.html`, `popup.js`, `background.js`, `overlay.css`, `README.md`, `core/config.js` y `core/main.js` fueron reemplazados por una versión anterior sin herramientas `pc_*` ni la confirmación `confirmPc`, mientras que el commit `c05399a` tenía la versión correcta del agente de PC. El registro de cambios anota modificaciones de esos archivos a las 21:06 y a las 22:08 del 18-nov, con fecha de archivo de octubre (típico de una copia que conserva fechas). No se ha identificado qué lo causó. Las 45 pruebas de la extensión pasaban igual con las dos versiones, porque no cubren esas partes | Restaurados desde `c05399a`; copia de lo que había en `backups\extension-revertida-20261118`; `comprobar_proyecto.py` ahora lo detecta. Pendiente: recargar la extensión en el navegador |
 
 ### 9.2 Limpieza y organización
 

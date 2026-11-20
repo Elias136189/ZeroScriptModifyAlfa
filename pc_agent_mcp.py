@@ -240,7 +240,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "pc_shell",
-        "description": "Run a shell command on the PC. On Windows this is PowerShell (-NoProfile -NonInteractive); on macOS/Linux it is bash -lc. Returns the exit code, stdout and stderr. Use cwd for a different working directory. Avoid interactive commands and long-running servers. Through the ZeroScript browser extension the user confirms each call unless confirmation is disabled; standalone MCP clients use their own approval UI.",
+        "description": "Run a shell command on the PC. On Windows this is PowerShell (-NoProfile -NonInteractive); on other platforms it is bash -lc. Returns the exit code, stdout and stderr. Use cwd for a different working directory. Avoid interactive commands and long-running servers. Through the ZeroScript browser extension the user confirms each call unless confirmation is disabled; standalone MCP clients use their own approval UI.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -478,7 +478,7 @@ def build_instructions() -> str:
     )
     if CFG["allow_shell"]:
         shell = (
-            "pc_shell is enabled (PowerShell on Windows, bash on macOS/Linux). "
+            "pc_shell is enabled (PowerShell on Windows, bash on other platforms). "
             "Use non-interactive commands and set timeout_ms for long builds."
         )
     else:
