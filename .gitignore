@@ -1,3 +1,6 @@
+# ── Runtime Python portable (local / USB; se regenera con preparar_portable.bat) ──
+runtime/
+
 # ── Carpetas solo locales ────────────────────────────────────────────────
 Compressed/
 Deprecated/

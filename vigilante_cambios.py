@@ -39,7 +39,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 LOG_DIR = PROJECT_ROOT / "logs"
 REGISTRY_DIR = LOG_DIR / "registro_cambios"
 PID_FILE = LOG_DIR / "vigilante_cambios.pid"
-IGNORE_DIRS = {"__pycache__", ".git", "logs", "backups", "assets", "workspace_wake"}
+IGNORE_DIRS = {"__pycache__", ".git", "logs", "backups", "assets", "workspace_wake", "runtime"}
 IGNORE_NAMES = {"desktop.ini", "Thumbs.db"}
 IGNORE_PREFIXES = ("~$",)
 DEBOUNCE_SECONDS = 1.0
@@ -81,6 +81,45 @@ class ChangeHandler(FileSystemEventHandler):
     def __init__(self):
         super().__init__()
         self._last: dict[str, tuple[str, float]] = {}
+        # Cache de (mtime_ns, size) para detectar cambios reales de contenido
+        self._file_state: dict[str, tuple[int, int]] = {}
+        self._prime_state()
+
+    def _prime_state(self) -> None:
+        """Precarga (st_mtime_ns, st_size) de los archivos actuales al iniciar."""
+        for root, dirs, files in os.walk(PROJECT_ROOT):
+            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+            for name in files:
+                if name in IGNORE_NAMES or name.startswith(IGNORE_PREFIXES):
+                    continue
+                full = os.path.join(root, name)
+                st = self._get_file_state(full)
+                if st is not None:
+                    self._file_state[full] = st
+
+    def _get_file_state(self, path: str) -> tuple[int, int] | None:
+        """Devuelve (st_mtime_ns, st_size) o None si no existe/no accesible."""
+        try:
+            st = os.stat(path)
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
+    def _has_real_change(self, path: str) -> bool:
+        """True si mtime_ns o size han cambiado desde la ultima vez."""
+        current = self._get_file_state(path)
+        if current is None:
+            self._file_state.pop(path, None)
+            return False
+        prev = self._file_state.get(path)
+        if prev is None:
+            self._file_state[path] = current
+            return True
+        if prev != current:
+            self._file_state[path] = current
+            return True
+        # Mismo mtime_ns y size -> sin cambio real de contenido
+        return False
 
     def _debounced(self, event: FileSystemEvent) -> bool:
         """Evita rafagas: mismo tipo en <1 s, o MODIFIED justo tras CREATED."""
@@ -113,20 +152,39 @@ class ChangeHandler(FileSystemEventHandler):
             print(f"[vigilante] Error escribiendo log: {exc}", file=sys.stderr)
 
     def on_created(self, event):
-        if not should_ignore(event.src_path) and not self._debounced(event):
+        if should_ignore(event.src_path):
+            return
+        if not event.is_directory:
+            st = self._get_file_state(event.src_path)
+            if st is not None:
+                self._file_state[event.src_path] = st
+        if not self._debounced(event):
             self._log(event)
 
     def on_modified(self, event):
-        if not should_ignore(event.src_path) and not self._debounced(event):
+        if event.is_directory or should_ignore(event.src_path):
+            return
+        # Ignorar lecturas (mtime_ns/size iguales) ANTES del debounce
+        if not self._has_real_change(event.src_path):
+            return
+        if not self._debounced(event):
             self._log(event)
 
     def on_deleted(self, event):
         if not should_ignore(event.src_path):
+            self._file_state.pop(event.src_path, None)
+            self._last.pop(event.src_path, None)
             self._log(event)
 
     def on_moved(self, event):
         if should_ignore(event.src_path) and should_ignore(event.dest_path):
             return
+        self._file_state.pop(event.src_path, None)
+        self._last.pop(event.src_path, None)
+        if not event.is_directory:
+            st = self._get_file_state(event.dest_path)
+            if st is not None:
+                self._file_state[event.dest_path] = st
         self._log(event)
 
 

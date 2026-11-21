@@ -187,13 +187,15 @@ def invalidate_cache() -> None:
 
 
 def read_config() -> dict[str, Any]:
-    try:
-        if CONFIG_PATH.is_file():
-            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
-            if isinstance(data, dict):
-                return data
-    except Exception as exc:
-        log(f"no se pudo leer {CONFIG_PATH}: {exc}")
+    candidates = [CONFIG_PATH, ROOT / "pc_agent_config.example.json"]
+    for cfg_path in candidates:
+        try:
+            if cfg_path.is_file():
+                data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+                if isinstance(data, dict):
+                    return data
+        except Exception as exc:
+            log(f"no se pudo leer {cfg_path}: {exc}")
     return {}
 
 

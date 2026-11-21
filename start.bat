@@ -5,376 +5,343 @@ chcp 65001 >nul
 title ZeroScript Bridge
 cd /d "%~dp0"
 
-REM Pin the Chrome extension ID so the bridge only accepts connections from
-REM the ZeroScript extension, not any arbitrary extension (security fix).
-REM The ID depends on the folder path because the manifest has no "key":
-REM SHA-256 of the absolute path of zeroscript-extension in UTF-16LE, first
-REM 16 bytes mapped to a-p. If the project folder is moved or renamed, update
-REM this value (comprobar_proyecto.py reports the expected ID).
-if not defined ZS_BRIDGE_EXTENSION_ID set "ZS_BRIDGE_EXTENSION_ID=jgigjkahlhhfcmbnlbmbbcdpeljdkidp"
+set "ROOT=%~dp0"
+if not defined ZS_BRIDGE_PORT set "ZS_BRIDGE_PORT=17613"
+if not defined CHAT_LOCAL_PORT set "CHAT_LOCAL_PORT=8765"
 
-if not exist "%~dp0logs" mkdir "%~dp0logs" >nul 2>nul
-set "LOGFILE=%~dp0logs\start.log"
+REM Opciones de linea de comandos:
+REM   start.bat /consola   -> abre el bridge en una ventana de consola visible
+REM   start.bat /nochat    -> no abre el chat local en el navegador
+REM   start.bat /nopause   -> termina sin esperar tecla al final
+set "OPT_CONSOLE=0"
+set "OPT_NOCHAT=0"
+set "OPT_NOPAUSE=0"
+:parse_args
+if "%~1"=="" goto :args_done
+if /i "%~1"=="/consola" set "OPT_CONSOLE=1"
+if /i "%~1"=="/console" set "OPT_CONSOLE=1"
+if /i "%~1"=="/nochat"  set "OPT_NOCHAT=1"
+if /i "%~1"=="/nopause" set "OPT_NOPAUSE=1"
+shift
+goto :parse_args
+:args_done
+
+REM El ID de la extension ya se fija automaticamente en bridge.py usando el
+REM campo "key" de zeroscript-extension\manifest.json (o la ruta actual si no
+REM tiene "key"). Si necesitas forzar otro ID, define ZS_BRIDGE_EXTENSION_ID.
+
+REM Preparar carpetas y configuraciones iniciales con rutas relativas si faltan
+if not exist "%ROOT%workspace_wake" mkdir "%ROOT%workspace_wake" >nul 2>nul
+if not exist "%ROOT%pc_agent_config.json" if exist "%ROOT%pc_agent_config.example.json" copy /y "%ROOT%pc_agent_config.example.json" "%ROOT%pc_agent_config.json" >nul 2>nul
+if not exist "%ROOT%pc_agent_config.restricted.json" if exist "%ROOT%pc_agent_config.restricted.example.json" copy /y "%ROOT%pc_agent_config.restricted.example.json" "%ROOT%pc_agent_config.restricted.json" >nul 2>nul
+if not exist "%ROOT%despertar_config.json" if exist "%ROOT%despertar_config.example.json" copy /y "%ROOT%despertar_config.example.json" "%ROOT%despertar_config.json" >nul 2>nul
+
+if not exist "%ROOT%logs" mkdir "%ROOT%logs" >nul 2>nul
+set "LOGFILE=%ROOT%logs\start.log"
 call :log "===== %DATE% %TIME%  start.bat launched ====="
-REM Log the Windows build once per launch - most support requests arrive as a
-REM single terminal screenshot, so anything that identifies the machine's
-REM environment must be either ON SCREEN or in this log.
 for /f "tokens=*" %%v in ('ver') do call :log "%%v"
 
 echo.
 echo   === ZeroScript Bridge ===
 echo.
 
-REM Refuse to run from inside a ZIP preview: Explorer extracts start.bat alone
-REM to %TEMP%, so bridge.py is missing and the launch fails with a confusing
-REM Python error. Detect the missing file up front with a plain explanation -
-REM this is one of the most common first-run mistakes.
-if not exist "%~dp0bridge.py" (
-    echo   ERROR: bridge.py not found next to start.bat.
-    echo.
-    echo   If you opened start.bat from inside the downloaded ZIP, first EXTRACT
-    echo   the whole ZIP ^(right-click, "Extract All..."^), then run start.bat
-    echo   from the extracted folder.
-    echo.
-    call :log "FATAL: bridge.py missing next to start.bat - run from inside ZIP?"
-    pause
-    exit /b 1
-)
+if not exist "%ROOT%bridge.py" goto :err_no_bridge
 
-REM --- 1. Find Python ---------------------------------------------------------
-echo   [1/3] Looking for Python...
-set "PY="
-
-REM Prefer the py launcher - it never resolves to the Microsoft Store stub.
-where py >nul 2>nul && set "PY=py -3"
-call :validate_py && goto :found
-
-REM Fall back to python on PATH, but skip the Store stub (WindowsApps) which
-REM cannot run pip and silently fails.
-set "PY=python"
-call :validate_py && goto :found
-
-REM Last resort: scan the standard install folders directly. Covers the common
-REM case where Python was installed WITHOUT "Add to PATH" and without the py
-REM launcher, so neither "py" nor "python" resolves. Newest version first.
-for %%R in (
-    "%LOCALAPPDATA%\Programs\Python"
-    "%ProgramFiles%"
-    "%ProgramFiles(x86)%"
-) do (
-    if exist "%%~R" (
-        for /f "delims=" %%D in ('dir /b /ad /o-n "%%~R\Python3*" 2^>nul') do (
-            if exist "%%~R\%%D\python.exe" (
-                set PY="%%~R\%%D\python.exe"
-                call :validate_py && goto :found
-            )
-        )
-    )
-)
-
-set "PY="
-call :log "Python not found on PATH or in standard install folders."
-goto :need_install
-
-:found
-REM Print the exact interpreter VERSION on screen (not just the launcher name):
-REM a user screenshot must tell us whether the failure is a too-old Python
-REM without asking them to run anything else.
-REM "call" prefix: when %PY% is a quoted full path (the no-PATH scan case), a
-REM bare quoted command inside for /f trips cmd's leading-quote stripping rule;
-REM call re-parses the line and keeps the quotes intact.
-for /f "tokens=*" %%v in ('call %PY% --version 2^>^&1') do (
-    echo         Found: %PY%  ^(%%v^)
-    call :log "Python found: %PY% [%%v]"
-)
-
-REM --- Resolve actual python.exe path (not py launcher) for pip install ---
+REM --- 1. Arranque con Python embebido (runtime\python\) ---------------------
+echo   [1/3] Comprobando Python embebido ^(runtime\python^)...
 set "PY_EXE="
-for /f "delims=" %%P in ('call %PY% -c "import sys; print(sys.executable)" 2^>nul') do set "PY_EXE=%%P"
-if not defined PY_EXE (
-    REM Fallback: if PY is already a full path
-    for %%P in ("%PY%") do if exist "%%~fP" set "PY_EXE=%%~fP"
-)
-if defined PY_EXE (
-    echo         Resolved python.exe: %PY_EXE%
-    call :log "Resolved python.exe for pip: %PY_EXE%"
-)
+set "PYW_EXE="
+set "PY_MODE="
+set "PORTABLE_PY=%ROOT%runtime\python\python.exe"
+set "PORTABLE_PYW=%ROOT%runtime\python\pythonw.exe"
+set "PORTABLE_CFA_BLOCKED=0"
 
-REM --- Find pythonw.exe (windowless) for launching the bridge hidden ---
-set "PYW="
-if defined PY (
-    REM If PY is "py -3" or "python", try to find pythonw.exe via py launcher
-    for /f "delims=" %%P in ('call %PY% -c "import sys; import os; print(os.path.join(os.path.dirname(sys.executable), 'pythonw.exe'))" 2^>nul') do set "PYW=%%P"
-)
-if not defined PYW (
-    REM Fallback: if PY is a full path to python.exe, replace with pythonw.exe
-    for %%P in ("%PY%") do if exist "%%~dpPpythonw.exe" set "PYW=%%~dpPpythonw.exe"
-)
-if not defined PYW (
-    REM Last resort: common locations
-    for %%R in ("%LOCALAPPDATA%\Programs\Python" "%ProgramFiles%" "%ProgramFiles(x86)%") do (
-        if exist "%%~R" (
-            for /f "delims=" %%D in ('dir /b /ad /o-n "%%~R\Python3*" 2^>nul') do (
-                if exist "%%~R\%%D\pythonw.exe" set "PYW=%%~R\%%D\pythonw.exe"
-            )
-        )
-    )
-)
-if defined PYW (
-    echo         Found pythonw.exe for hidden launch
-    call :log "pythonw.exe found: %PYW%"
-) else (
-    echo         ADVERTENCIA: pythonw.exe no encontrado; el bridge se vera en consola
-    call :log "WARNING: pythonw.exe not found, bridge will show console"
-)
-goto :install_deps
+if not exist "%PORTABLE_PY%" goto :bootstrap_portable
+"%PORTABLE_PY%" -c "import sys, websockets; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>nul
+if errorlevel 1 goto :bootstrap_portable
+goto :check_portable_write
 
-:need_install
-REM --- Python not found, try winget -------------------------------------------
-REM winget itself may be absent (LTSC / old Win10 / stripped installs). Without
-REM this check the "winget" line fails with an unrelated "not recognized" error
-REM that users screenshot without context - name the real problem instead.
-where winget >nul 2>nul
-if errorlevel 1 (
-    echo   ERROR: Python is not installed and winget ^(Windows package manager^)
-    echo   is not available on this PC, so it cannot be installed automatically.
-    echo.
-    echo   Install Python manually: https://www.python.org/downloads/
-    echo   IMPORTANT: tick "Add python.exe to PATH", then run start.bat again.
-    echo.
-    call :log "FATAL: no Python and no winget on this machine."
-    pause
-    exit /b 1
-)
-echo         Not found. Installing via winget...
-echo.
-winget install --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
-if errorlevel 1 call :log "winget install returned an error - see console output above."
-echo.
-echo   Checking again...
-set "PY=py -3"
-call :validate_py && goto :ready
-set "PY=python"
-call :validate_py && goto :ready
-REM A winget install does NOT refresh THIS console's PATH, so "py"/"python" can
-REM stay unresolvable in the very session that installed them. Rescan the
-REM standard install folders directly (same scan as the pre-install fallback)
-REM before telling the user it failed - a plain restart-and-retry would have
-REM worked, so we do its equivalent for them.
-for %%R in (
-    "%LOCALAPPDATA%\Programs\Python"
-    "%ProgramFiles%"
-    "%ProgramFiles(x86)%"
-) do (
-    if exist "%%~R" (
+:bootstrap_portable
+if not exist "%ROOT%preparar_portable.ps1" goto :fallback_system
+echo         Preparando Python 3.12 embebido en runtime\python\ ^(primera vez^)...
+call :log "Embedded Python missing or incomplete; running preparar_portable.ps1."
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%preparar_portable.ps1"
+if errorlevel 1 goto :bootstrap_failed
+if not exist "%PORTABLE_PY%" goto :bootstrap_failed
+goto :check_portable_write
+
+:bootstrap_failed
+echo         AVISO: no se pudo preparar runtime\python\ automaticamente.
+call :log "preparar_portable.ps1 failed; trying system Python as fallback."
+goto :fallback_system
+
+:check_portable_write
+"%PORTABLE_PY%" -c "import sys, websockets; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>nul
+if errorlevel 1 goto :fallback_system
+
+REM Comprobar si Windows Defender (Acceso controlado a carpetas) bloquea escribir en logs\
+"%PORTABLE_PY%" -c "import pathlib, sys; p = pathlib.Path(sys.argv[1]); p.write_text('ok', encoding='ascii'); p.unlink()" "%ROOT%logs\.py_write_test" >nul 2>nul
+if errorlevel 1 goto :portable_cfa_blocked
+
+set "PY_EXE=%PORTABLE_PY%"
+if exist "%PORTABLE_PYW%" set "PYW_EXE=%PORTABLE_PYW%"
+set "PY_MODE=embebido"
+set "PYTHONDONTWRITEBYTECODE=1"
+goto :python_ready
+
+:portable_cfa_blocked
+set "PORTABLE_CFA_BLOCKED=1"
+echo         AVISO: Windows Defender ^(Acceso controlado a carpetas^) bloqueo la
+echo                escritura de runtime\python\python.exe en esta carpeta.
+echo                Buscando Python del sistema como respaldo...
+call :log "Embedded Python blocked from writing to logs\ (Defender CFA); checking system Python."
+
+:fallback_system
+call :try_sys_cmd "py -3"
+if defined PY_EXE goto :sys_found
+call :try_sys_cmd "python"
+if defined PY_EXE goto :sys_found
+for %%R in ("%LOCALAPPDATA%\Programs\Python" "%ProgramFiles%" "%ProgramFiles(x86)%") do (
+    if not defined PY_EXE if exist "%%~R" (
         for /f "delims=" %%D in ('dir /b /ad /o-n "%%~R\Python3*" 2^>nul') do (
-            if exist "%%~R\%%D\python.exe" (
-                set PY="%%~R\%%D\python.exe"
-                call :validate_py && goto :ready
+            if not defined PY_EXE if exist "%%~R\%%D\python.exe" (
+                call :try_sys_exe "%%~R\%%D\python.exe"
             )
         )
     )
 )
-echo.
-echo   ERROR: Python not found after install.
-echo   Install manually: https://www.python.org/downloads/
-echo   Tick "Add python.exe to PATH" then run this again.
-echo.
-call :log "FATAL: no usable Python found even after winget install."
-pause
-exit /b 1
-:ready
-echo         Python ready!
-call :log "Python ready after winget install: %PY%"
+if defined PY_EXE goto :sys_found
+goto :err_no_python
 
-:install_deps
-REM --- 2. Install websockets --------------------------------------------------
-echo.
-echo   [2/3] Checking websockets library...
-%PY% -c "import websockets" >nul 2>nul
-if errorlevel 1 (
-    echo         Installing websockets - first time only...
-    %PY% -c "import subprocess, sys; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', 'websockets'])"
-    if errorlevel 1 (
-        echo.
-        echo   ERROR: Could not install websockets ^(see pip output above^).
-        echo   Common causes: no internet, a firewall/antivirus blocking pip,
-        echo   or Python has no working pip. If you used the Microsoft Store
-        echo   python, install from https://www.python.org/downloads/ instead
-        echo   ^(tick "Add to PATH"^).
-        echo.
-        call :log "FATAL: pip install websockets failed."
-        pause
-        exit /b 1
-    )
+:sys_found
+set "PY_MODE=sistema (respaldo)"
+for %%P in ("%PY_EXE%") do if exist "%%~dpPpythonw.exe" set "PYW_EXE=%%~dpPpythonw.exe"
+goto :python_ready
+
+:python_ready
+set "PY_VER="
+for /f "tokens=*" %%v in ('"%PY_EXE%" --version 2^>^&1') do set "PY_VER=%%v"
+echo         Python [!PY_MODE!]: !PY_VER!
+echo         Ruta: !PY_EXE!
+call :log "Python selected [!PY_MODE!]: !PY_EXE! [!PY_VER!]"
+if defined PYW_EXE (
+    call :log "pythonw.exe found: !PYW_EXE!"
+) else (
+    echo         AVISO: pythonw.exe no encontrado; el bridge se abrira en consola.
+    call :log "WARNING: pythonw.exe not found; bridge will use console."
 )
+
+REM --- 2. Verificar libreria websockets --------------------------------------
+echo.
+echo   [2/3] Comprobando libreria websockets...
+"%PY_EXE%" -c "import websockets" >nul 2>nul
+if not errorlevel 1 goto :deps_ok
+
+if /i "%PY_MODE%"=="embebido" goto :repair_portable_deps
+echo         Instalando websockets en Python del sistema...
+"%PY_EXE%" -m pip install --user websockets
+if errorlevel 1 goto :err_no_websockets
+goto :deps_ok
+
+:repair_portable_deps
+echo         Reparando websockets en runtime\python\...
+call :log "websockets missing in embedded Python; running preparar_portable.ps1."
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%preparar_portable.ps1" -Force
+"%PY_EXE%" -c "import websockets" >nul 2>nul
+if errorlevel 1 goto :err_no_websockets
+
+:deps_ok
 echo         OK
 call :log "websockets library OK"
 
-REM --- 3. Run the bridge ------------------------------------------------------
+REM --- 3. Arrancar chat local y bridge ---------------------------------------
 echo.
-echo   [3/3] Starting bridge...
+echo   [3/3] Iniciando bridge ^(puerto %ZS_BRIDGE_PORT%^)...
 
-REM If a previous bridge is already listening on 17613, say so instead of
-REM silently killing it - a double-launch is easy to do by mistake (e.g.
-REM double-clicking start.bat twice) and should not look like nothing happened.
 set "OLDPID="
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr :17613 ^| findstr LISTENING 2^>nul') do (
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":%ZS_BRIDGE_PORT% " ^| findstr LISTENING 2^>nul') do (
     set "OLDPID=%%a"
 )
-if defined OLDPID (
-    echo         A previous bridge ^(pid !OLDPID!^) is already running on this port.
-    echo         Replacing it with this new instance...
-    call :log "Killing previous bridge instance - pid !OLDPID! - port 17613."
-    taskkill /F /T /PID !OLDPID! >nul 2>nul
-    REM Give Windows a moment to actually free the socket before we rebind it.
-    REM ping instead of timeout: timeout aborts with "input redirection is not
-    REM supported" when start.bat is run from a redirected/non-interactive shell.
-    ping -n 2 127.0.0.1 >nul 2>nul
-    set "STILLTHERE="
-    for /f "tokens=5" %%a in ('netstat -aon ^| findstr :17613 ^| findstr LISTENING 2^>nul') do (
-        set "STILLTHERE=%%a"
-    )
-    if defined STILLTHERE (
-        echo.
-        echo   WARNING: port 17613 is still held by pid !STILLTHERE! after trying
-        echo   to close the previous bridge. If the bridge below fails to start,
-        echo   close that process manually in Task Manager ^(or restart Windows^)
-        echo   and run start.bat again.
-        echo.
-        call :log "WARNING: port 17613 still held by pid !STILLTHERE! after taskkill."
-    )
+if not defined OLDPID goto :port_free
+
+REM Comprobar que el proceso en el puerto realmente es bridge.py antes de cerrarlo
+set "IS_BRIDGE=0"
+for /f "tokens=*" %%C in ('powershell -NoProfile -Command "$p=Get-CimInstance Win32_Process -Filter \"ProcessId=!OLDPID!\" -ErrorAction SilentlyContinue; if($p -and $p.CommandLine -like '*bridge.py*'){ 'YES' } else { 'NO' }" 2^>nul') do (
+    if /i "%%C"=="YES" set "IS_BRIDGE=1"
+)
+if "%IS_BRIDGE%"=="0" goto :port_other_app
+
+echo         Bridge anterior detectado ^(pid !OLDPID!^). Reiniciando...
+call :log "Killing previous bridge instance - pid !OLDPID! - port %ZS_BRIDGE_PORT%."
+taskkill /F /T /PID !OLDPID! >nul 2>nul
+ping -n 2 127.0.0.1 >nul 2>nul
+set "STILLTHERE="
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":%ZS_BRIDGE_PORT% " ^| findstr LISTENING 2^>nul') do (
+    set "STILLTHERE=%%a"
+)
+if defined STILLTHERE (
+    echo   AVISO: el puerto %ZS_BRIDGE_PORT% sigue ocupado por pid !STILLTHERE!.
+    call :log "WARNING: port %ZS_BRIDGE_PORT% still held by pid !STILLTHERE! after taskkill."
+)
+goto :port_free
+
+:port_other_app
+echo.
+echo   ERROR: el puerto %ZS_BRIDGE_PORT% esta ocupado por otro programa ^(pid !OLDPID!^),
+echo   no por bridge.py. Cierra ese programa o define otro puerto con ZS_BRIDGE_PORT.
+echo.
+call :log "FATAL: port %ZS_BRIDGE_PORT% held by non-bridge pid !OLDPID!."
+goto :finish_fail
+
+:port_free
+echo.
+if "%OPT_CONSOLE%"=="0" if defined PYW_EXE (
+    echo  ############################################################
+    echo  ##                                                        ##
+    echo  ##   El bridge se lanza OCULTO ^(pythonw.exe^).             ##
+    echo  ##   Esta ventana de inicio puede cerrarse;               ##
+    echo  ##   el bridge y el mensajero siguen en segundo plano.    ##
+    echo  ##                                                        ##
+    echo  ############################################################
+    echo.
 )
 
-echo.
-echo  ############################################################
-echo  ##                                                        ##
-echo  ##   El bridge se lanza OCULTO (pythonw.exe).             ##
-echo  ##   Esta ventana de inicio puede cerrarse;               ##
-echo  ##   el bridge y el mensajero siguen en segundo plano.    ##
-echo  ##                                                        ##
-echo  ############################################################
-echo.
-REM --- Chat local (carpeta chat-local): servidor oculto en http://127.0.0.1:8765 ---
-call :start_chat
-
-REM --- Despertar: verifica archivos; el bridge arranca el mensajero automaticamente ---
+if "%OPT_NOCHAT%"=="0" call :start_chat
 call :check_despertar
 
-call :log "Launching bridge.py with %PYW% - hidden, detached"
-REM pythonw.exe is a GUI-subsystem binary: it has no console at all, so this
-REM starts the bridge completely windowless and returns immediately. No cmd /c
-REM wrapper and no VBScript in between (both caused quote/stdin problems).
-if not defined PYW goto :launch_console
-start "" "%PYW%" "%~dp0bridge.py"
+if "%OPT_CONSOLE%"=="1" goto :launch_console
+if not defined PYW_EXE goto :launch_console
+call :log "Launching bridge.py hidden with !PYW_EXE!"
+start "" "!PYW_EXE!" "%ROOT%bridge.py"
 goto :launch_wait
-:launch_console
-call :log "pythonw.exe unavailable - launching the bridge in its own console"
-start "ZeroScript Bridge" %PY% "%~dp0bridge.py"
-:launch_wait
-REM Wait ~3 s for it to bind the port, then report whether it answered.
-ping -n 4 127.0.0.1 >nul 2>nul
-set "BRIDGE_EXIT=0"
-set "BRPORT="
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr :17613 ^| findstr LISTENING 2^>nul') do set "BRPORT=%%a"
-call :log "bridge.py launched hidden - listener pid !BRPORT!"
 
-REM NO cerramos el chat local aqui: el bridge ya no vive en esta ventana, asi
-REM que start.bat termina enseguida y el chat (http://127.0.0.1:8765) debe
-REM seguir disponible. lanzar_chat.ps1 reutiliza el servidor en el proximo
-REM arranque, y :stop_chat sigue existiendo para uso manual.
+:launch_console
+call :log "Launching bridge.py in console with !PY_EXE!"
+start "ZeroScript Bridge" "!PY_EXE!" "%ROOT%bridge.py"
+
+:launch_wait
+ping -n 4 127.0.0.1 >nul 2>nul
+set "BRPORT="
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":%ZS_BRIDGE_PORT% " ^| findstr LISTENING 2^>nul') do set "BRPORT=%%a"
+call :log "bridge.py launched - listener pid !BRPORT!"
 
 echo.
 if defined BRPORT (
-    echo   Bridge ACTIVO en ws://127.0.0.1:17613  ^(pid !BRPORT!^)
-    echo   Mensajero y PC agent corriendo en segundo plano, sin ventanas.
+    echo   Bridge ACTIVO en ws://127.0.0.1:%ZS_BRIDGE_PORT%  ^(pid !BRPORT!^)
+    echo   Python: [!PY_MODE!] !PY_VER!
     echo   Logs: logs\bridge_debug.log y logs\despertar.log
 ) else (
-    echo   AVISO: el bridge no responde todavia en el puerto 17613.
+    echo   AVISO: el bridge no responde todavia en el puerto %ZS_BRIDGE_PORT%.
     echo   Revisa logs\bridge_debug.log y logs\start.log
 )
-echo   Presiona una tecla para cerrar SOLO esta ventana de inicio.
-pause >nul
+if "%OPT_NOPAUSE%"=="0" (
+    echo   Presiona una tecla para cerrar SOLO esta ventana de inicio.
+    pause >nul
+)
 exit /b 0
 
-REM --- Subroutine: verify %PY% is a real, usable Python ------------------------
-REM Returns 0 only if the interpreter runs, has a working pip, AND is Python 3.9
-REM or newer. The pip check rejects the Microsoft Store stub (WindowsApps\
-REM python.exe). The version check rejects old interpreters (e.g. 3.7/3.8) that
-REM lack asyncio.to_thread, which the bridge requires.
-:validate_py
-REM Empty PY would turn the next lines into "-m ..." / "-c ..." and cmd would
-REM print "'-m' is not recognized" before we even try. Bail out silently.
-if not defined PY exit /b 1
-%PY% -m pip --version >nul 2>nul || exit /b 1
-%PY% -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>nul
+REM --- Errores fatales -------------------------------------------------------
+:err_no_bridge
+echo   ERROR: bridge.py no se encontro junto a start.bat.
+echo.
+echo   Si abriste start.bat desde dentro del ZIP, primero EXTRAE toda la carpeta
+echo   ^(clic derecho, "Extraer todo..."^) y ejecuta start.bat desde la carpeta extraida.
+echo.
+call :log "FATAL: bridge.py missing next to start.bat."
+goto :finish_fail
+
+:err_no_python
+echo.
+if "%PORTABLE_CFA_BLOCKED%"=="1" (
+    echo   ERROR: runtime\python\python.exe existe, pero Windows Defender ^(Acceso
+    echo   controlado a carpetas^) impide que escriba dentro de esta ruta y no hay
+    echo   Python del sistema instalado.
+    echo.
+    echo   Soluciones:
+    echo     1. Mueve esta carpeta fuera de Documentos ^(ej. C:\ZeroScriptModify^)
+    echo     2. O permite runtime\python\python.exe en Seguridad de Windows.
+) else (
+    echo   ERROR: no se pudo iniciar Python embebido ^(runtime\python\^) ni se encontro
+    echo   Python 3.9+ en este PC.
+    echo.
+    echo   Con conexion a internet, ejecuta preparar_portable.bat para descargar
+    echo   Python 3.12 embebido en runtime\python\, o copia la carpeta runtime\ desde otro PC.
+)
+echo.
+call :log "FATAL: no usable embedded or system Python found."
+goto :finish_fail
+
+:err_no_websockets
+echo.
+echo   ERROR: no se pudo cargar ni instalar la libreria websockets.
+echo   Comprueba tu conexion a internet o ejecuta preparar_portable.bat.
+echo.
+call :log "FATAL: websockets unavailable."
+goto :finish_fail
+
+:finish_fail
+if "%OPT_NOPAUSE%"=="0" pause
+exit /b 1
+
+REM --- Subrutinas ------------------------------------------------------------
+:try_sys_cmd
+set "CAND_CMD=%~1"
+set "CAND_EXE="
+for /f "delims=" %%P in ('%CAND_CMD% -c "import sys; print(sys.executable) if sys.version_info >= (3, 9) else sys.exit(1)" 2^>nul') do set "CAND_EXE=%%P"
+if not defined CAND_EXE exit /b 1
+echo !CAND_EXE! | findstr /i "WindowsApps" >nul && exit /b 1
+call :try_sys_exe "!CAND_EXE!"
 exit /b %errorlevel%
 
-REM --- Subroutine: append a line to start.log (best-effort, never blocks) -----
+:try_sys_exe
+set "CAND_PATH=%~1"
+if not exist "%CAND_PATH%" exit /b 1
+"%CAND_PATH%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>nul || exit /b 1
+"%CAND_PATH%" -c "import websockets" >nul 2>nul && (
+    set "PY_EXE=%CAND_PATH%"
+    exit /b 0
+)
+"%CAND_PATH%" -m pip --version >nul 2>nul || exit /b 1
+set "PY_EXE=%CAND_PATH%"
+exit /b 0
+
 :log
-REM Redirect FIRST, then echo. With the redirect at the end, a message that
-REM ENDS IN A DIGIT (e.g. "exited with code 0") makes cmd parse "0>>" as a
-REM file-handle redirect: the digit is eaten and the line prints to the console
-REM instead of the log (seen live). echo( is the safe echo form for arbitrary text.
 >>"%LOGFILE%" 2>nul echo(%~1
 exit /b 0
 
-REM --- Subroutine: start/verify the local chat and open it in the browser -------
-REM lanzar_chat.ps1 waits until http://127.0.0.1:8765 answers and then opens the
-REM browser exactly once. It also handles a chat server left from a previous
-REM run. It is launched in the background so the bridge starts immediately.
 :start_chat
-if not exist "%~dp0chat-local\server.py" (
+if not exist "%ROOT%chat-local\server.py" (
     call :log "Chat local: server.py not found; browser not opened."
     exit /b 0
 )
-if not exist "%~dp0chat-local\chat.html" (
+if not exist "%ROOT%chat-local\chat.html" (
     call :log "Chat local: chat.html not found; browser not opened."
     exit /b 0
 )
-if not exist "%~dp0chat-local\lanzar_chat.ps1" (
+if not exist "%ROOT%chat-local\lanzar_chat.ps1" (
     call :log "Chat local: lanzar_chat.ps1 not found; browser not opened."
     exit /b 0
 )
-set "PYEXE="
-for /f "delims=" %%P in ('call %PY% -c "import sys;print(sys.executable)" 2^>nul') do set "PYEXE=%%P"
-if not defined PYEXE (
-    call :log "Chat local: could not resolve the Python executable; browser not opened."
-    exit /b 0
-)
-start "" /b powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0chat-local\lanzar_chat.ps1" -PythonExe "!PYEXE!" -Port 8765 >nul 2>nul
-echo         Chat local: comprobando http://127.0.0.1:8765
-call :log "Chat local: launcher started with '!PYEXE!' on port 8765; browser opens when it responds."
+start "" /b powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%chat-local\lanzar_chat.ps1" -PythonExe "!PY_EXE!" -Port %CHAT_LOCAL_PORT% >nul 2>nul
+echo         Chat local: comprobando http://127.0.0.1:%CHAT_LOCAL_PORT%
+call :log "Chat local: launcher started with '!PY_EXE!' on port %CHAT_LOCAL_PORT%."
 exit /b 0
 
-REM --- Subroutine: despertar (archivos y comandos manuales) --------------------
-REM El bridge arranca el mensajero del buzon por su cuenta (wake_watch). Aqui
-REM solo se comprueba que existan los archivos y se muestran los comandos
-REM manuales de despertar.bat.
 :check_despertar
-if not exist "%~dp0despertar.bat" (
+if not exist "%ROOT%despertar.bat" (
     call :log "Despertar: despertar.bat not found."
     exit /b 0
 )
-if not exist "%~dp0despertar.py" (
+if not exist "%ROOT%despertar.py" (
     call :log "Despertar: despertar.py not found."
     exit /b 0
 )
 echo.
 echo         Mensajero listo ^(el bridge lo arranca automaticamente^):
-echo           despertar.bat /opencode   - OpenCode (automatico)
-echo           despertar.bat /claude     - Claude (solo estado; no se despierta)
+echo           despertar.bat /opencode   - OpenCode ^(automatico^)
+echo           despertar.bat /claude     - Claude ^(solo estado; no se despierta^)
 echo           solo despierta si el mensaje lleva @despertar o [despertar]
 echo           ^(agrega /simular para probar sin activar; crea wake_off para apagarlo^)
-if exist "%~dp0wake_off" echo         AVISO: existe wake_off, el mensajero esta apagado.
+if exist "%ROOT%wake_off" echo         AVISO: existe wake_off, el mensajero esta apagado.
 call :log "Despertar: OpenCode automatic; Claude manual; token @despertar."
-exit /b 0
-
-REM --- Subroutine: stop the local chat server started above -------------------
-REM lanzar_chat.ps1 only stops the process if its command line matches
-REM chat-local\server.py, so a different program on port 8765 is left alone.
-:stop_chat
-if not exist "%~dp0chat-local\lanzar_chat.ps1" exit /b 0
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0chat-local\lanzar_chat.ps1" -Stop -Port 8765 >nul 2>nul
-call :log "Chat local: stop requested - port 8765 - exit !errorlevel!"
 exit /b 0

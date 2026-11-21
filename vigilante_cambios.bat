@@ -7,7 +7,15 @@
 ::   vigilante_cambios.bat ver 50     ultimas 50 lineas del registro
 setlocal
 cd /d "%~dp0"
-set "PY=python"
-where py >nul 2>nul && set "PY=py -3"
-%PY% "%~dp0vigilante_cambios.py" %*
+set "PY="
+if exist "%~dp0runtime\python\python.exe" (
+    if not exist "%~dp0logs" mkdir "%~dp0logs" >nul 2>nul
+    "%~dp0runtime\python\python.exe" -c "import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text('ok'); p.unlink()" "%~dp0logs\.py_write_test" >nul 2>nul
+    if not errorlevel 1 set PY="%~dp0runtime\python\python.exe"
+)
+if not defined PY (
+    where py >nul 2>nul && set "PY=py -3"
+)
+if not defined PY set "PY=python"
+call %PY% "%~dp0vigilante_cambios.py" %*
 exit /b %errorlevel%

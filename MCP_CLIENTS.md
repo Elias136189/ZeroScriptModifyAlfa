@@ -122,7 +122,7 @@ Look for the `mcp-server-zeroscript-pc` log if the server does not appear.
 
 > **Cowork / local agent mode:** Cowork has its own sandbox and only exposes the
 > folders under its allowed roots (see `coworkUserFilesPath` in Claude's
-> `config.json`, usually `C:\Users\Usuario\Claude`). Native file tools cannot
+> `config.json`, usually `%USERPROFILE%\Claude`). Native file tools cannot
 > reach other folders. Local MCP tools can also be missing on the first turn of
 > a fresh Cowork session; use a regular Claude chat for ZeroScript, or send a
 > second message and allow the `zeroscript-pc` tools when they appear.

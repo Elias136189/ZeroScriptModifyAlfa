@@ -37,9 +37,18 @@ echo.
 exit /b 1
 
 :ejecutar
+if exist "%~dp0runtime\python\python.exe" (
+  if not exist "%~dp0logs" mkdir "%~dp0logs" >nul 2>nul
+  "%~dp0runtime\python\python.exe" -c "import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text('ok'); p.unlink()" "%~dp0logs\.py_write_test" >nul 2>nul
+  if not errorlevel 1 goto con_portable
+)
 where py >nul 2>nul
 if %ERRORLEVEL%==0 goto con_py
 python "%~dp0despertar.py" %TARGET% %APPLY%
+exit /b %ERRORLEVEL%
+
+:con_portable
+"%~dp0runtime\python\python.exe" "%~dp0despertar.py" %TARGET% %APPLY%
 exit /b %ERRORLEVEL%
 
 :con_py

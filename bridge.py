@@ -22,6 +22,7 @@
 #     Nothing ever hangs the agentic loop silently.
 # ──────────────────────────────────────────────────────────────────────────
 import asyncio
+import hmac
 import json
 import os
 import queue
@@ -870,7 +871,12 @@ class MCPClient:
                 script = cmd[0]
                 if not os.path.isabs(script):
                     script = os.path.join(HERE, script)
-                cmd = [sys.executable, script] + cmd[1:]
+                py_exe = sys.executable
+                if os.name == "nt" and os.path.basename(py_exe).lower() == "pythonw.exe":
+                    sibling_py = os.path.join(os.path.dirname(py_exe), "python.exe")
+                    if os.path.isfile(sibling_py):
+                        py_exe = sibling_py
+                cmd = [py_exe, script] + cmd[1:]
             # On Windows, npx/npm/yarn/pnpm/bunx are .cmd shims that Popen can't
             # launch directly (WinError 2). Run them through cmd.exe so any
             # node-based MCP server "just works" from config.json.
@@ -1439,6 +1445,43 @@ def _ws_origin(ws):
         return False, None
 
 
+_AUTO_EXT_ID_CACHE = None
+
+
+def _derive_extension_id():
+    """Derive the Chrome extension ID from zeroscript-extension/manifest.json.
+
+    Uses the static RSA public 'key' in manifest.json when present (same ID on
+    every PC and folder), otherwise hashes the absolute path of the extension
+    folder (how Chrome assigns IDs to unpacked extensions without 'key').
+    """
+    global _AUTO_EXT_ID_CACHE
+    if _AUTO_EXT_ID_CACHE is not None:
+        return _AUTO_EXT_ID_CACHE
+    ext_dir = os.path.join(HERE, "zeroscript-extension")
+    manifest_path = os.path.join(ext_dir, "manifest.json")
+    try:
+        import base64
+        import hashlib
+        raw_bytes = None
+        if os.path.isfile(manifest_path):
+            with open(manifest_path, "r", encoding="utf-8-sig") as f:
+                m = json.load(f)
+            key = (m.get("key") or "").strip() if isinstance(m, dict) else ""
+            if key:
+                raw_bytes = base64.b64decode(key)
+        if raw_bytes is None and os.path.isdir(ext_dir):
+            raw_bytes = os.path.abspath(ext_dir).encode("utf-16-le")
+        if raw_bytes is not None:
+            digest = hashlib.sha256(raw_bytes).hexdigest()[:32]
+            _AUTO_EXT_ID_CACHE = "".join(chr(ord("a") + int(c, 16)) for c in digest)
+            return _AUTO_EXT_ID_CACHE
+    except Exception:
+        pass
+    _AUTO_EXT_ID_CACHE = ""
+    return ""
+
+
 def _origin_allowed(origin):
     if os.environ.get("ZS_BRIDGE_ALLOW_ANY_ORIGIN", "").strip().lower() in ("1", "true", "yes", "on"):
         return True
@@ -1448,10 +1491,47 @@ def _origin_allowed(origin):
     extra = [o.strip() for o in os.environ.get("ZS_BRIDGE_ALLOWED_ORIGINS", "").split(",") if o.strip()]
     if origin in extra:
         return True
-    ext_id = os.environ.get("ZS_BRIDGE_EXTENSION_ID", "").strip()
+    ext_id = os.environ.get("ZS_BRIDGE_EXTENSION_ID", "").strip() or _derive_extension_id()
     if ext_id:
         return origin in (f"chrome-extension://{ext_id}", f"moz-extension://{ext_id}")
     return origin.startswith(("chrome-extension://", "moz-extension://"))
+
+
+def _check_token(ws) -> bool:
+    """Verifica token compartido ZS_BRIDGE_TOKEN.
+    Acepta: query param ?token=xxx, header Authorization: Bearer xxx, o header X-ZS-Token: xxx.
+    Si ZS_BRIDGE_TOKEN no está configurado, permite la conexión (compatibilidad)."""
+    expected = os.environ.get("ZS_BRIDGE_TOKEN", "").strip()
+    if not expected:
+        return True  # Sin token configurado = compatibilidad hacia atrás
+    try:
+        req = getattr(ws, "request", None)
+        headers = getattr(req, "headers", None) if req is not None else None
+        if headers is None:
+            headers = getattr(ws, "request_headers", None)
+        if headers is None:
+            return False
+        # 1. Header Authorization: Bearer <token>
+        auth = headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+            return hmac.compare_digest(token, expected)
+        # 2. Header X-ZS-Token
+        token = headers.get("X-ZS-Token", "").strip()
+        if token:
+            return hmac.compare_digest(token, expected)
+        # 3. Query parameter ?token=xxx
+        # websockets no expone query params directamente; intentamos leer de request.path
+        path = getattr(req, "path", "") or getattr(ws, "path", "")
+        if "token=" in path:
+            import urllib.parse
+            parsed = urllib.parse.urlparse(path)
+            qs = urllib.parse.parse_qs(parsed.query)
+            token = qs.get("token", [""])[0]
+            return hmac.compare_digest(token, expected)
+    except Exception:
+        pass
+    return False
 
 
 async def handler(ws):
@@ -1462,6 +1542,14 @@ async def handler(ws):
             f"extension. See ZS_BRIDGE_ALLOWED_ORIGINS / ZS_BRIDGE_EXTENSION_ID.", "rd")
         try:
             await ws.close(1008, "origin not allowed")
+        except Exception:
+            pass
+        return
+    if not _check_token(ws):
+        log(f"REJECTED connection from {peer} (origin={_origin!r}): invalid or missing token. "
+            f"Set ZS_BRIDGE_TOKEN in bridge and extension.", "rd")
+        try:
+            await ws.close(1008, "invalid token")
         except Exception:
             pass
         return

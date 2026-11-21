@@ -56,7 +56,7 @@
       ],
       "title": "OpenCode",
       "command": [
-        "C:/Users/TU_USUARIO/AppData/Local/Programs/ZeroScript/opencode.exe",
+        "opencode",
         "run",
         "--agent",
         "wake",

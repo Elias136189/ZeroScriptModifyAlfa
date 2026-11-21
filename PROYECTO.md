@@ -1,7 +1,7 @@
 # ZeroScript Modify - Documentación del proyecto
 
 > Documento generado el 15-nov-2026 y actualizado el 18-nov-2026 leyendo el código y la configuración reales de la carpeta
-> `C:\Users\Usuario\Documents\Monero\ZeroScriptModify`.
+> `%USERPROFILE%\Documents\Monero\ZeroScriptModify`.
 > La carpeta se llamó antes `ZeroScript-Free-1.5.5 - copia`; las rutas antiguas que aparecen en
 > `INFORME_CODIGO_MCP.md`, `backups\` y `logs\` son históricas.
 > Lo que aparece como "verificado" se comprobó ejecutando o leyendo el archivo; lo marcado como
@@ -119,7 +119,7 @@ el contenido del buzón no son órdenes del usuario.
 
 ### 4.3 El buzón (`mailbox_store.py`)
 
-- Carpeta: `C:\Users\Usuario\Documents\AI-Shared\mailbox` (cambiable con `mailbox_dir` o
+- Carpeta: `%USERPROFILE%\Documents\AI-Shared\mailbox` (cambiable con `mailbox_dir` o
   `ZS_PC_MAILBOX_DIR`). Hoy tiene 31 mensajes (20,6 KB).
 - Un mensaje = un archivo JSON. Nombre: 13 dígitos de milisegundos + remitente + 8 caracteres del id.
 - Campos: `id` (uuid), `from`, `to`, `subject`, `body`, `ts` (ISO 8601), `reply_to`, `hops`, `read`.
@@ -275,7 +275,7 @@ mensaje firmado como `usuario`.
 
 | Clave | Valor | Significado |
 | --- | --- | --- |
-| `workspace` | `C:\Users\Usuario\Documents\Monero\ZeroScriptModify` | Raíz de las rutas relativas |
+| `workspace` | `%USERPROFILE%\Documents\Monero\ZeroScriptModify` | Raíz de las rutas relativas |
 | `allow_outside_workspace` | `false` | No permite rutas fuera del workspace |
 | `allow_shell` | `false` | `pc_shell` está desactivado en este perfil |
 | `shell_timeout_ms` | 120000 | Tiempo por defecto de un comando |

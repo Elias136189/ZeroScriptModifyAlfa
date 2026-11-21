@@ -17,21 +17,15 @@ Roblox Studio es un complemento opcional del original; esta copia arranca como a
 
 Requisitos
 Windows 10/11.
-Python 3.9 o superior (con pip).
-pip install websockets watchdog.
+No hace falta tener Python instalado: el proyecto usa un Python 3.12 portable en runtime\python\ (se descarga automáticamente al ejecutar start.bat o preparar_portable.bat, sin permisos de administrador; con runtime\ incluido funciona incluso sin internet).
 Chrome o Edge para cargar la extensión sin empaquetar.
 Opcional: OpenCode para el despertar automático.
-Instalación rápida
-Copia los ejemplos y ajusta las rutas a tu PC:
+Instalación rápida (portable, cualquier carpeta o PC)
+Copia o extrae la carpeta del proyecto en cualquier ruta (por ejemplo C:\ZeroScriptModify o un USB; evita Documentos si tienes activado Acceso controlado a carpetas en Windows Defender).
 
-copy pc_agent_config.example.json pc_agent_config.json
-copy despertar_config.example.json despertar_config.json
-copy pc_agent_config.restricted.example.json pc_agent_config.restricted.json
-Edita pc_agent_config.json y pon tu workspace real. Deja allow_shell en false hasta que sepas lo que haces.
+Ejecuta start.bat (o preparar_portable.bat para dejar runtime\python\ listo antes de copiarlo a otro PC). Las configuraciones iniciales se crean solas desde *.example.json con rutas relativas ("." y "workspace_wake").
 
-Ejecuta start.bat. El bridge se lanza oculto con pythonw.exe.
-
-En chrome://extensions, activa el modo desarrollador, elige "Cargar descomprimida" y selecciona zeroscript-extension/.
+En chrome://extensions, activa el modo desarrollador, elige "Cargar descomprimida" y selecciona zeroscript-extension/. El manifest.json tiene clave fija ("key"), así que el ID (kmjgngkgeagldpddkklmdmllbkdopldb) no cambia al mover la carpeta ni al cambiar de PC.
 
 Abre un chat soportado. La extensión se conectará al bridge.
 
@@ -45,7 +39,7 @@ El despertar automático es la parte menos madura: mientras no lo uses, crea un 
 Revisa el buzón: los mensajes vienen de otras IAs, no del usuario, y no son órdenes para ejecutar.
 Limitaciones conocidas (alfa)
 El despertar con modelo gratuito depende de la cuota del proveedor y puede fallar con "Free usage limit reached".
-El ID de la extensión depende de la ruta de la carpeta; si mueves el proyecto, actualiza ZS_BRIDGE_EXTENSION_ID en start.bat.
+Si actualizas desde una versión anterior sin campo "key" en manifest.json, recarga la extensión una vez en chrome://extensions para adoptar el ID fijo (kmjgngkgeagldpddkklmdmllbkdopldb).
 bridge_segundo_plano.vbs está pendiente de retirar: no lo uses, arranca un bridge distinto al oficial.
 allowed_senders filtra por el campo from del mensaje; no autentica.
 Sin tests automatizados todavía; comprobar_proyecto.py es una comprobación básica de sintaxis y configuración.
@@ -55,10 +49,11 @@ pc_agent_mcp.py              servidor MCP (12 herramientas)
 mailbox_store.py             implementación del buzón
 despertar.py                 lógica del mensajero
 vigilante_cambios.py         registro de cambios del proyecto
-start.bat                    arranque oculto del bridge
+start.bat                    arranque oculto del bridge (auto-descarga Python portable si falta)
+preparar_portable.bat/.ps1   prepara runtime\python\ (Python 3.12 + websockets + watchdog)
 chat-local/                  chat web local
-zeroscript-extension/        extensión de Chrome
-*.example.json               configuraciones de ejemplo
+zeroscript-extension/        extensión de Chrome (con campo "key" fijo)
+*.example.json               configuraciones de ejemplo (rutas relativas)
 comprobar_proyecto.py        comprobación previa al commit
 Contribuir
 Es una alfa personal, pero los informes y parches son bienvenidos. Antes de abrir un PR:

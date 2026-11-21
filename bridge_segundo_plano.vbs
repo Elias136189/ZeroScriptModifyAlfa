@@ -14,6 +14,30 @@ If Len(Trim(salida)) > 0 Then
   WScript.Quit 0
 End If
 
-cmd = "cmd /c cd /d """ & dir & """ && set ZS_BRIDGE_EXTENSION_ID=jgigjkahlhhfcmbnlbmbbcdpeljdkidp&& py -3 bridge.py >> logs\bridge_stdout.log 2>&1"
+' Busca primero Python portable dentro del proyecto (runtime\python\python.exe)
+' para funcionar en PCs sin Python instalado; si no existe, usa py -3 o python.
+pyCmd = ""
+portablePy = dir & "\runtime\python\python.exe"
+If fso.FileExists(portablePy) Then
+  testCmd = """" & portablePy & """ -c ""import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text('ok'); p.unlink()"" """ & dir & "\logs\.py_write_test"""
+  If sh.Run(testCmd, 0, True) = 0 Then
+    pyCmd = """" & portablePy & """"
+  End If
+End If
+If pyCmd = "" Then
+  If sh.Run("cmd /c where py >nul 2>nul", 0, True) = 0 Then
+    pyCmd = "py -3"
+  ElseIf sh.Run("cmd /c where python >nul 2>nul", 0, True) = 0 Then
+    pyCmd = "python"
+  End If
+End If
+
+If pyCmd = "" Then
+  MsgBox "No se encontro Python ni runtime\python\python.exe. Ejecuta primero start.bat o preparar_portable.bat.", 48, "ZeroScript"
+  WScript.Quit 1
+End If
+
+' bridge.py deriva automaticamente el ID de la extension desde manifest.json ("key" o ruta actual).
+cmd = "cmd /c cd /d """ & dir & """ && " & pyCmd & " bridge.py >> logs\bridge_stdout.log 2>&1"
 sh.Run cmd, 0, False
 MsgBox "Bridge lanzado en segundo plano. Revisa logs\bridge_stdout.log si algo falla.", 64, "ZeroScript"

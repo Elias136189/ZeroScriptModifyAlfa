@@ -18,11 +18,22 @@ set "VBS=%STARTUP_DIR%\ZeroScript_Vigilante_Cambios.vbs"
 set "PYTHON_EXE="
 set "PYTHONW_EXE="
 
-rem Buscar Python 3.9+
-where py >nul 2>nul
-if not errorlevel 1 (
-  py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>nul
-  if not errorlevel 1 set "PYTHON_EXE=py -3"
+rem Buscar Python 3.9+ (primero runtime portable dentro del proyecto)
+set "USING_PORTABLE=0"
+if exist "%PROJECT_DIR%runtime\python\python.exe" (
+  if not exist "%PROJECT_DIR%logs" mkdir "%PROJECT_DIR%logs" >nul 2>nul
+  "%PROJECT_DIR%runtime\python\python.exe" -c "import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text('ok'); p.unlink(); raise SystemExit(0 if sys.version_info >= (3, 9) else 1)" "%PROJECT_DIR%logs\.py_write_test" >nul 2>nul
+  if not errorlevel 1 (
+    set "PYTHON_EXE=%PROJECT_DIR%runtime\python\python.exe"
+    set "USING_PORTABLE=1"
+  )
+)
+if not defined PYTHON_EXE (
+  where py >nul 2>nul
+  if not errorlevel 1 (
+    py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>nul
+    if not errorlevel 1 set "PYTHON_EXE=py -3"
+  )
 )
 if not defined PYTHON_EXE (
   where python >nul 2>nul
@@ -32,12 +43,14 @@ if not defined PYTHON_EXE (
   )
 )
 if not defined PYTHON_EXE (
-  echo ERROR: No se encontro Python 3.9+. Instalalo o anade al PATH.
+  echo ERROR: No se encontro Python 3.9+. Ejecuta preparar_portable.bat o instala Python 3.9+.
   pause
   exit /b 1
 )
 
-for /f "tokens=*" %%A in ('%PYTHON_EXE% -c "import sys; print(sys.executable)" 2^>nul') do set "PYTHON_EXE=%%A"
+if "%USING_PORTABLE%"=="0" (
+  for /f "tokens=*" %%A in ('%PYTHON_EXE% -c "import sys; print(sys.executable)" 2^>nul') do set "PYTHON_EXE=%%A"
+)
 for %%A in ("%PYTHON_EXE%") do set "PYTHON_DIR=%%~dpA"
 set "PYTHONW_EXE=%PYTHON_DIR%pythonw.exe"
 if not exist "%PYTHONW_EXE%" set "PYTHONW_EXE=%PYTHON_EXE%"
@@ -49,10 +62,10 @@ echo Script:   %SCRIPT%
 echo Inicio:   %VBS%
 
 rem Verificar e instalar watchdog
-%PYTHON_EXE% -c "import watchdog" >nul 2>nul
+"%PYTHON_EXE%" -c "import watchdog" >nul 2>nul
 if errorlevel 1 (
   echo Instalando watchdog...
-  %PYTHON_EXE% -m pip install --quiet watchdog
+  "%PYTHON_EXE%" -m pip install --no-warn-script-location --quiet watchdog
   if errorlevel 1 (
     echo ERROR: No se pudo instalar watchdog.
     pause
@@ -87,7 +100,7 @@ timeout /t 2 /nobreak >nul
 
 echo.
 echo Estado:
-%PYTHON_EXE% "%SCRIPT%" status
+"%PYTHON_EXE%" "%SCRIPT%" status
 echo.
 echo Log: %PROJECT_DIR%logs\registro_cambios\cambios_YYYY-WWW.log
 echo Para ver:      vigilante_cambios.bat ver 50

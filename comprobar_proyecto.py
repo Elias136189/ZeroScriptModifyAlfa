@@ -25,6 +25,7 @@ Revisa:
 Devuelve 0 si todo esta bien y 1 si hay algun problema.
 """
 
+import base64
 import hashlib
 import json
 import py_compile
@@ -84,9 +85,12 @@ def revisar_python():
             AVISOS.append(f"falta (opcional?): {rel}")
             continue
         try:
-            py_compile.compile(str(p), doraise=True)
-        except py_compile.PyCompileError as exc:
-            PROBLEMAS.append(f"no compila {rel}: {exc.msg}")
+            source = p.read_bytes()
+            compile(source, str(p), "exec")
+        except SyntaxError as exc:
+            PROBLEMAS.append(f"no compila {rel}: linea {exc.lineno}: {exc.msg}")
+        except OSError as exc:
+            PROBLEMAS.append(f"no se pudo leer {rel}: {exc}")
 
 
 def revisar_json():
@@ -119,6 +123,13 @@ def revisar_manifest():
         PROBLEMAS.append("manifest.json: content_scripts vacio")
     if "key" not in data:
         AVISOS.append("manifest.json: sin campo 'key'; el ID dependera de la ruta")
+    else:
+        try:
+            raw_key = base64.b64decode(str(data["key"]), validate=True)
+            if len(raw_key) < 64:
+                PROBLEMAS.append("manifest.json: el campo 'key' es demasiado corto")
+        except Exception:
+            PROBLEMAS.append("manifest.json: el campo 'key' no es base64 valido")
     hosts = data.get("host_permissions") or []
     if len(hosts) not in (8, 14):
         AVISOS.append(f"manifest.json: {len(hosts)} host_permissions (se esperaban 8 o 14)")
@@ -130,6 +141,12 @@ def id_extension(ruta: Path) -> str:
     return "".join(chr(ord("a") + int(c, 16)) for c in digest)
 
 
+def id_extension_desde_key(key_b64: str) -> str:
+    """ID de una extension con campo 'key' en manifest.json: SHA-256 del DER."""
+    digest = hashlib.sha256(base64.b64decode(key_b64)).hexdigest()[:32]
+    return "".join(chr(ord("a") + int(c, 16)) for c in digest)
+
+
 def revisar_id_extension():
     manifest = ROOT / "zeroscript-extension/manifest.json"
     if not manifest.exists():
@@ -138,10 +155,15 @@ def revisar_id_extension():
         data = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return  # ya lo reporta revisar_json
-    if "key" in data:
-        return  # con "key" el ID es fijo y no depende de la ruta
 
-    esperado = id_extension(ROOT / "zeroscript-extension")
+    if "key" in data:
+        try:
+            esperado = id_extension_desde_key(str(data["key"]))
+        except Exception:
+            return  # ya lo reporta revisar_manifest
+    else:
+        esperado = id_extension(ROOT / "zeroscript-extension")
+
     patron = re.compile(r"ZS_BRIDGE_EXTENSION_ID=([a-p]{32})")
     vistos = {}
     for rel in ("start.bat", "bridge_segundo_plano.vbs"):
@@ -151,13 +173,15 @@ def revisar_id_extension():
         texto = p.read_text(encoding="utf-8", errors="ignore")
         m = patron.search(texto)
         if not m:
-            AVISOS.append(f"{rel}: no fija ZS_BRIDGE_EXTENSION_ID")
+            # Con "key" en manifest.json, bridge.py deriva el ID automaticamente
+            if "key" not in data:
+                AVISOS.append(f"{rel}: no fija ZS_BRIDGE_EXTENSION_ID")
             continue
         vistos[rel] = m.group(1)
         if m.group(1) != esperado:
             PROBLEMAS.append(
                 f"{rel}: ZS_BRIDGE_EXTENSION_ID={m.group(1)} no coincide con el ID "
-                f"de la ruta actual ({esperado})"
+                f"esperado ({esperado})"
             )
     if len(set(vistos.values())) > 1:
         PROBLEMAS.append("start.bat y bridge_segundo_plano.vbs fijan IDs distintos")
@@ -200,7 +224,7 @@ def revisar_bat_crlf():
         if not p.is_file() or p.suffix.lower() not in (".bat", ".cmd"):
             continue
         rel = p.relative_to(ROOT).as_posix()
-        if rel.startswith(("backups/", "logs/", ".git/")):
+        if rel.startswith(("backups/", "logs/", ".git/", "runtime/")):
             continue
         try:
             datos = p.read_bytes()
@@ -222,7 +246,7 @@ def revisar_rutas_personales():
         if not p.is_file():
             continue
         rel = p.relative_to(ROOT).as_posix()
-        if rel.startswith(("backups/", "logs/", "__pycache__/", ".git/")):
+        if rel.startswith(("backups/", "logs/", "__pycache__/", ".git/", "runtime/")):
             continue
         if rel in ARCHIVOS_EXCLUIDOS_RUTAS:
             continue

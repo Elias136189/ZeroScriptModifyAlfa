@@ -1,8 +1,9 @@
 {
-  "workspace": "C:/Users/TU_USUARIO/Documents/ZeroScript-Modify/workspace_wake",
+  "workspace": "workspace_wake",
   "mailbox_dir": "~/Documents/AI-Shared/mailbox",
   "allow_outside_workspace": false,
   "allow_shell": false,
+  "allow_write": false,
   "shell_timeout_ms": 120000,
   "max_read_bytes": 2000000,
   "max_output_chars": 40000,

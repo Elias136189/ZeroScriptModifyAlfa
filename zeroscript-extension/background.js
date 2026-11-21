@@ -8,7 +8,28 @@
 // even when the bridge is offline. The agentic loop must never hang waiting.
 
 const PORT = 17613;
-const BRIDGE_URL = `ws://127.0.0.1:${PORT}`;
+
+// Token opcional para autenticación compartida con el bridge (ZS_BRIDGE_TOKEN).
+// Se puede configurar via chrome.storage.local.set({zsBridgeToken: "..."}).
+// Si no está configurado, se conecta sin token (compatibilidad hacia atrás).
+let BRIDGE_TOKEN = "";
+
+async function loadBridgeToken() {
+  try {
+    const data = await chrome.storage.local.get("zsBridgeToken");
+    BRIDGE_TOKEN = (data.zsBridgeToken || "").trim();
+  } catch {
+    BRIDGE_TOKEN = "";
+  }
+}
+
+function buildBridgeUrl() {
+  const base = `ws://127.0.0.1:${PORT}`;
+  if (BRIDGE_TOKEN) {
+    return `${base}?token=${encodeURIComponent(BRIDGE_TOKEN)}`;
+  }
+  return base;
+}
 
 // Chat sites where a ZeroScript provider content script runs. Status pushes go
 // to every tab matching these. Add the new provider's URL pattern here (and in
@@ -25,6 +46,7 @@ const STALE_SOCKET_MS = 25000;
 const REQUEST_TIMEOUT_DEFAULT = 130000; // a bit above the 120s tool timeout
 
 let ws = null;
+let connectingPromise = null;
 let connected = false;
 let reconnectDelay = RECONNECT_MIN;
 let reconnectTimer = null;
@@ -57,56 +79,71 @@ function log(...a) {
 }
 
 // ── WebSocket lifecycle ─────────────────────────────────────────────────
-function connect() {
+async function connect() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     return;
   }
-  clearTimeout(reconnectTimer);
-  try {
-    ws = new WebSocket(BRIDGE_URL);
-  } catch (e) {
-    log("WebSocket ctor failed", e);
-    scheduleReconnect();
-    return;
+  if (connectingPromise) {
+    return connectingPromise;
   }
-
-  ws.onopen = () => {
-    connected = true;
-    reconnectDelay = RECONNECT_MIN;
-    lastMessageAt = Date.now();
-    log("connected to bridge");
-    startHeartbeat();
-    broadcastStatus();
-  };
-
-  ws.onmessage = (ev) => {
-    lastMessageAt = Date.now();
-    let msg;
+  clearTimeout(reconnectTimer);
+  connectingPromise = (async () => {
     try {
-      msg = JSON.parse(ev.data);
-    } catch {
-      return;
+      // Cargar token antes de conectar (la primera vez o si cambió en storage)
+      await loadBridgeToken();
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      try {
+        ws = new WebSocket(buildBridgeUrl());
+      } catch (e) {
+        log("WebSocket ctor failed", e);
+        scheduleReconnect();
+        return;
+      }
+
+      ws.onopen = () => {
+        connected = true;
+        reconnectDelay = RECONNECT_MIN;
+        lastMessageAt = Date.now();
+        log("connected to bridge");
+        startHeartbeat();
+        broadcastStatus();
+      };
+
+      ws.onmessage = (ev) => {
+        lastMessageAt = Date.now();
+        let msg;
+        try {
+          msg = JSON.parse(ev.data);
+        } catch {
+          return;
+        }
+        handleBridgeMessage(msg);
+      };
+
+      ws.onclose = () => {
+        connected = false;
+        mcpAlive = false;
+        studioConnected = null;
+        studioApp = null;
+        studioProc = null;
+        serversCache = [];
+        stopHeartbeat();
+        failAllPending("bridge connection closed");
+        broadcastStatus();
+        scheduleReconnect();
+      };
+
+      ws.onerror = () => {
+        // onclose will follow; nothing to do here but avoid an unhandled error.
+        try { ws.close(); } catch {}
+      };
+    } finally {
+      connectingPromise = null;
     }
-    handleBridgeMessage(msg);
-  };
-
-  ws.onclose = () => {
-    connected = false;
-    mcpAlive = false;
-    studioConnected = null;
-    studioApp = null;
-    studioProc = null;
-    serversCache = [];
-    stopHeartbeat();
-    failAllPending("bridge connection closed");
-    broadcastStatus();
-    scheduleReconnect();
-  };
-
-  ws.onerror = () => {
-    // onclose will follow; nothing to do here but avoid an unhandled error.
-    try { ws.close(); } catch {}
-  };
+  })();
+  return connectingPromise;
 }
 
 function scheduleReconnect() {
@@ -140,11 +177,11 @@ function stopHeartbeat() {
 }
 
 // Resolve once the socket is OPEN, or false after `timeout` ms.
-function waitForConnection(timeout = 8000) {
+async function waitForConnection(timeout = 8000) {
+  if (connected && ws && ws.readyState === WebSocket.OPEN) return true;
+  await connect(); // nudge a (re)connection - important after a worker wake-up
+  const t0 = Date.now();
   return new Promise((resolve) => {
-    if (connected && ws && ws.readyState === WebSocket.OPEN) return resolve(true);
-    connect(); // nudge a (re)connection - important after a worker wake-up
-    const t0 = Date.now();
     const iv = setInterval(() => {
       if (connected && ws && ws.readyState === WebSocket.OPEN) {
         clearInterval(iv);
@@ -301,7 +338,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     switch (msg.type) {
       case "status":
-        if (!connected) connect(); // self-heal after a worker wake-up
+        if (!connected) await connect(); // self-heal after a worker wake-up
         sendResponse(statusObj());
         break;
       case "list_tools": {
@@ -355,7 +392,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 // Wake/keepalive hooks.
-chrome.runtime.onStartup.addListener(connect);
-chrome.runtime.onInstalled.addListener(connect);
+chrome.runtime.onStartup.addListener(() => connect());
+chrome.runtime.onInstalled.addListener(() => connect());
 
 connect();

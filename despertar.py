@@ -242,7 +242,12 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def load_config(path: Path) -> dict[str, Any]:
-    raw = read_json(path, {})
+    effective = path
+    if not effective.is_file() and effective.suffix.lower() == ".json":
+        example = effective.with_name(f"{effective.stem}.example.json")
+        if example.is_file():
+            effective = example
+    raw = read_json(effective, {})
     config = copy.deepcopy(DEFAULT_CONFIG)
     for key, value in raw.items():
         if key in ("targets", "watch"):
@@ -604,9 +609,17 @@ def wake_cli(cfg: dict[str, Any], prompt: str, timeout: float) -> tuple[bool, st
     if not command or not isinstance(command, list):
         return False, "falta 'command' (lista) en la configuracion del destino"
     argv = [str(part).replace("{prompt}", prompt) for part in command]
+    argv[0] = os.path.expandvars(os.path.expanduser(argv[0]))
     # En Windows los CLI de npm son .cmd/.bat y CreateProcess no los ejecuta
     # directamente: hay que resolverlos y pasar por cmd.exe.
-    resolved = shutil.which(argv[0]) or argv[0]
+    resolved = shutil.which(argv[0])
+    if not resolved and os.name == "nt" and Path(argv[0]).name.lower() in ("opencode", "opencode.exe"):
+        local_app = os.environ.get("LOCALAPPDATA", "")
+        if local_app:
+            candidate = Path(local_app) / "Programs" / "ZeroScript" / "opencode.exe"
+            if candidate.is_file():
+                resolved = str(candidate)
+    resolved = resolved or argv[0]
     if os.name == "nt" and resolved.lower().endswith((".cmd", ".bat")):
         argv = ["cmd.exe", "/d", "/c", resolved, *argv[1:]]
     else:
@@ -615,11 +628,21 @@ def wake_cli(cfg: dict[str, Any], prompt: str, timeout: float) -> tuple[bool, st
     env = os.environ.copy()
     restricted_config = Path(__file__).parent / "pc_agent_config.restricted.json"
     if not restricted_config.is_file():
+        restricted_example = Path(__file__).parent / "pc_agent_config.restricted.example.json"
+        if restricted_example.is_file():
+            restricted_config = restricted_example
+    if not restricted_config.is_file():
         return False, f"no existe el perfil restringido: {restricted_config}"
+    wake_ws = Path(__file__).parent / "workspace_wake"
+    try:
+        wake_ws.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     env["ZS_PC_CONFIG"] = str(restricted_config)
     env.pop("ZS_PC_WORKSPACE", None)
     env["ZS_PC_ALLOW_OUTSIDE_WORKSPACE"] = "false"
     env["ZS_PC_ALLOW_SHELL"] = "false"
+    env["ZS_PC_ALLOW_WRITE"] = "false"
     try:
         code, out, err = _run_command(argv, timeout, env=env)
     except FileNotFoundError:

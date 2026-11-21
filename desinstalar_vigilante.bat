@@ -15,8 +15,19 @@ set "VBS=%STARTUP_DIR%\ZeroScript_Vigilante_Cambios.vbs"
 set "TASK_NAME=ZeroScript_Vigilante_Cambios"
 
 echo Deteniendo el vigilante...
-py -3 "%SCRIPT%" stop 2>nul
-if errorlevel 1 python "%SCRIPT%" stop 2>nul
+set "STOPPED_WITH_PORTABLE=0"
+if exist "%PROJECT_DIR%runtime\python\python.exe" (
+  if not exist "%PROJECT_DIR%logs" mkdir "%PROJECT_DIR%logs" >nul 2>nul
+  "%PROJECT_DIR%runtime\python\python.exe" -c "import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text('ok'); p.unlink()" "%PROJECT_DIR%logs\.py_write_test" >nul 2>nul
+  if not errorlevel 1 (
+    "%PROJECT_DIR%runtime\python\python.exe" "%SCRIPT%" stop 2>nul
+    set "STOPPED_WITH_PORTABLE=1"
+  )
+)
+if "%STOPPED_WITH_PORTABLE%"=="0" (
+  py -3 "%SCRIPT%" stop 2>nul
+  if errorlevel 1 python "%SCRIPT%" stop 2>nul
+)
 
 echo Borrando lanzador de Inicio...
 if exist "%VBS%" (

@@ -117,9 +117,10 @@ DEFAULT_AGENT_NAME = "zeroscript"
 
 
 DEFAULTS: dict[str, Any] = {
-    "workspace": "",
-    "allow_outside_workspace": True,
-    "allow_shell": True,
+    "workspace": ".",
+    "allow_outside_workspace": False,
+    "allow_shell": False,
+    "allow_write": True,
     "shell_timeout_ms": 120000,
     "max_read_bytes": 2_000_000,
     "max_output_chars": 40_000,
@@ -368,17 +369,30 @@ def _env_bool(name: str, fallback: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _effective_config_path(path: Path) -> Path:
+    """Return path if it exists, otherwise fall back to its .example.json sibling."""
+    if path.is_file():
+        return path
+    if path.suffix.lower() == ".json" and not path.name.lower().endswith(".example.json"):
+        example = path.with_name(f"{path.stem}.example.json")
+        if example.is_file():
+            return example
+    return path
+
+
 def load_config() -> dict[str, Any]:
     cfg = dict(DEFAULTS)
-    if CONFIG_PATH.is_file():
+    effective_cfg = _effective_config_path(CONFIG_PATH)
+    cfg["_loaded_config_path"] = effective_cfg
+    if effective_cfg.is_file():
         try:
-            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+            data = json.loads(effective_cfg.read_text(encoding="utf-8-sig"))
             if isinstance(data, dict):
                 for key, default in DEFAULTS.items():
                     if key in data:
                         cfg[key] = data[key]
         except Exception as exc:
-            log(f"could not read {CONFIG_PATH}: {exc}; using defaults")
+            log(f"could not read {effective_cfg}: {exc}; using defaults")
     # Environment overrides let a client (or a shortcut) use a different
     # workspace or permission profile without editing the JSON file. They take
     # precedence over pc_agent_config.json.
@@ -386,9 +400,17 @@ def load_config() -> dict[str, Any]:
     if env_workspace:
         cfg["workspace"] = env_workspace
     cfg["allow_outside_workspace"] = _env_bool(
-        "ZS_PC_ALLOW_OUTSIDE_WORKSPACE", bool(cfg.get("allow_outside_workspace", True))
+        "ZS_PC_ALLOW_OUTSIDE_WORKSPACE",
+        bool(cfg.get("allow_outside_workspace", DEFAULTS["allow_outside_workspace"])),
     )
-    cfg["allow_shell"] = _env_bool("ZS_PC_ALLOW_SHELL", bool(cfg.get("allow_shell", True)))
+    cfg["allow_shell"] = _env_bool(
+        "ZS_PC_ALLOW_SHELL",
+        bool(cfg.get("allow_shell", DEFAULTS["allow_shell"])),
+    )
+    cfg["allow_write"] = _env_bool(
+        "ZS_PC_ALLOW_WRITE",
+        bool(cfg.get("allow_write", DEFAULTS["allow_write"])),
+    )
     env_timeout = os.environ.get("ZS_PC_SHELL_TIMEOUT_MS", "").strip()
     if env_timeout:
         cfg["shell_timeout_ms"] = env_timeout
@@ -404,8 +426,10 @@ def load_config() -> dict[str, Any]:
     if raw_workspace:
         raw_workspace = os.path.expandvars(os.path.expanduser(raw_workspace))
         workspace = Path(raw_workspace)
+        if not workspace.is_absolute():
+            workspace = HERE / workspace
     else:
-        workspace = Path.home()
+        workspace = HERE
     try:
         cfg["workspace"] = workspace.resolve()
     except Exception:
@@ -422,8 +446,11 @@ def load_config() -> dict[str, Any]:
         cfg["mailbox_dir"] = mailbox.resolve()
     except Exception:
         cfg["mailbox_dir"] = mailbox.absolute()
-    cfg["allow_outside_workspace"] = bool(cfg.get("allow_outside_workspace", True))
-    cfg["allow_shell"] = bool(cfg.get("allow_shell", True))
+    cfg["allow_outside_workspace"] = bool(
+        cfg.get("allow_outside_workspace", DEFAULTS["allow_outside_workspace"])
+    )
+    cfg["allow_shell"] = bool(cfg.get("allow_shell", DEFAULTS["allow_shell"]))
+    cfg["allow_write"] = bool(cfg.get("allow_write", DEFAULTS["allow_write"]))
     try:
         cfg["shell_timeout_ms"] = max(1000, min(600000, int(cfg.get("shell_timeout_ms") or 120000)))
     except Exception:
@@ -483,6 +510,11 @@ def build_instructions() -> str:
         )
     else:
         shell = "pc_shell is disabled by pc_agent_config.json."
+    write_note = (
+        "pc_write and pc_edit are enabled."
+        if CFG["allow_write"]
+        else "pc_write and pc_edit are disabled (read-only mode: allow_write=false)."
+    )
     return "\n".join([
         "ZeroScript PC agent: local filesystem and shell access for this computer.",
         f"Workspace: {CFG['workspace']}. Relative paths resolve against it. {scope}",
@@ -514,6 +546,7 @@ def build_instructions() -> str:
         "a message just to fill the silence. When another agent asks you to "
         "check the mailbox, call msg_inbox first and answer only what is there.",
         shell,
+        write_note,
         "Outside the ZeroScript browser extension there is no browser "
         "confirmation prompt; the workspace and allow_shell settings in "
         "pc_agent_config.json are the safety boundary.",
@@ -674,6 +707,7 @@ def tool_system_info() -> str:
         "cwd": str(Path.cwd()),
         "allow_outside_workspace": CFG["allow_outside_workspace"],
         "allow_shell": CFG["allow_shell"],
+        "allow_write": CFG["allow_write"],
         "shell": "PowerShell" if os.name == "nt" else "bash",
         "drives": drives,
         "workspace_top_level": top_level,
@@ -730,6 +764,10 @@ def tool_read(args: dict[str, Any]) -> str:
 
 
 def tool_write(args: dict[str, Any]) -> str:
+    if not CFG["allow_write"]:
+        raise PermissionError(
+            "pc_write is disabled by allow_write=false in pc_agent_config.json"
+        )
     path = resolve_path(args.get("path"))
     content = args.get("content")
     if not isinstance(content, str):
@@ -747,6 +785,10 @@ def tool_write(args: dict[str, Any]) -> str:
 
 
 def tool_edit(args: dict[str, Any]) -> str:
+    if not CFG["allow_write"]:
+        raise PermissionError(
+            "pc_edit is disabled by allow_write=false in pc_agent_config.json"
+        )
     path = resolve_path(args.get("path"), must_exist=True)
     if not path.is_file():
         raise IsADirectoryError(f"not a file: {path}")
@@ -1360,8 +1402,10 @@ def _server_entry(style: str = "generic") -> dict[str, Any]:
     gets its own mailbox identity by default so one shared mailbox can tell
     them apart.
     """
+    portable_py = HERE / "runtime" / "python" / "python.exe"
+    py_cmd = str(portable_py) if portable_py.is_file() else (sys.executable or "python")
     entry: dict[str, Any] = {
-        "command": sys.executable or "python",
+        "command": py_cmd,
         "args": [str(SCRIPT_PATH)],
     }
     env: dict[str, str] = {
@@ -1405,8 +1449,11 @@ def check_setup() -> int:
     print(f"Python:  {platform.python_version()} ({sys.executable or 'unknown'})")
     if sys.version_info < (3, 9):
         problems.append("Python 3.9 or newer is required")
+    loaded_cfg = CFG.get("_loaded_config_path") or CONFIG_PATH
     if CONFIG_PATH.is_file():
         print(f"Config:  {CONFIG_PATH}")
+    elif isinstance(loaded_cfg, Path) and loaded_cfg.is_file():
+        print(f"Config:  {loaded_cfg} (fallback from missing {CONFIG_PATH.name})")
     else:
         print(f"Config:  {CONFIG_PATH} (not found; defaults in use)")
     print(f"Agent:   {CFG['agent_name']}")
@@ -1423,6 +1470,7 @@ def check_setup() -> int:
         problems.append(f"workspace is not a directory: {workspace}")
     print(f"  allow_outside_workspace: {CFG['allow_outside_workspace']}")
     print(f"  allow_shell:             {CFG['allow_shell']}")
+    print(f"  allow_write:             {CFG['allow_write']}")
     print(f"  shell_timeout_ms:        {CFG['shell_timeout_ms']}")
     print(f"  max_read_bytes:          {CFG['max_read_bytes']}")
     print(f"  max_output_chars:        {CFG['max_output_chars']}")
@@ -1473,8 +1521,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     log(f"v{SERVER_VERSION} workspace={CFG['workspace']} shell={CFG['allow_shell']} "
-        f"outside={CFG['allow_outside_workspace']} agent={CFG['agent_name']} "
-        f"mailbox={CFG['mailbox_dir']}")
+        f"write={CFG['allow_write']} outside={CFG['allow_outside_workspace']} "
+        f"agent={CFG['agent_name']} mailbox={CFG['mailbox_dir']}")
     for raw_line in sys.stdin:
         line = raw_line.strip()
         if not line:

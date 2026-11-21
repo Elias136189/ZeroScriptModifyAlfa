@@ -37,30 +37,23 @@ extensión si se necesita.
 ## Requisitos
 
 - Windows 10/11.
-- Python 3.9 o superior (con `pip`).
-- `pip install websockets watchdog`.
+- **No hace falta tener Python instalado:** el proyecto usa un Python 3.12 portable en `runtime\python\` (se descarga automáticamente al ejecutar `start.bat` o `preparar_portable.bat`, sin permisos de administrador; si copias la carpeta con `runtime\` ya generado, funciona sin internet).
 - Chrome o Edge para cargar la extensión sin empaquetar.
 - Opcional: OpenCode para el despertar automático.
 
-## Instalación rápida
+## Instalación rápida (portable, cualquier carpeta o PC)
 
-1. Copia los ejemplos y ajusta las rutas a tu PC:
+1. Copia o extrae la carpeta del proyecto en cualquier ruta (por ejemplo `C:\ZeroScriptModify` o una memoria USB; si Windows Defender tiene activado *Acceso controlado a carpetas*, evita ponerlo dentro de `Documentos`).
 
-   ```
-   copy pc_agent_config.example.json pc_agent_config.json
-   copy despertar_config.example.json despertar_config.json
-   copy pc_agent_config.restricted.example.json pc_agent_config.restricted.json
-   ```
+2. Ejecuta `start.bat` (o primero `preparar_portable.bat` si quieres dejar `runtime\python\` listo para llevártelo sin internet).
+   - `start.bat` crea automáticamente `pc_agent_config.json`, `pc_agent_config.restricted.json` y `despertar_config.json` desde los `*.example.json` si faltan (todos usan rutas relativas: `"."` y `"workspace_wake"`).
+   - Por seguridad, el ejemplo inicial deja `allow_shell: false` y `allow_outside_workspace: false`.
 
-2. Edita `pc_agent_config.json` y pon tu `workspace` real. Deja
-   `allow_shell` en `false` hasta que sepas lo que haces.
-
-3. Ejecuta `start.bat`. El bridge se lanza oculto con `pythonw.exe`.
-
-4. En `chrome://extensions`, activa el modo desarrollador, elige
+3. En `chrome://extensions`, activa el modo desarrollador, elige
    "Cargar descomprimida" y selecciona `zeroscript-extension/`.
+   - El `manifest.json` incluye un campo `"key"` fijo, así que el ID de la extensión (`kmjgngkgeagldpddkklmdmllbkdopldb`) es el mismo en cualquier PC y carpeta, y `bridge.py` lo verifica automáticamente.
 
-5. Abre un chat soportado. La extensión se conectará al bridge.
+4. Abre un chat soportado. La extensión se conectará al bridge.
 
 ## Seguridad
 
@@ -79,12 +72,9 @@ El proyecto ejecuta comandos y escribe archivos en tu PC. Antes de usarlo:
 
 - El despertar con modelo gratuito depende de la cuota del proveedor y puede
   fallar con "Free usage limit reached".
-- El ID de la extensión depende de la ruta de la carpeta. Si mueves el
-  proyecto, quita la extensión en `chrome://extensions` y vuelve a cargarla
-  desde `zeroscript-extension`; el navegador le asignará un ID nuevo. Copia ese
-  ID en `ZS_BRIDGE_EXTENSION_ID` de `start.bat` y `bridge_segundo_plano.vbs`
-  (o ejecuta `comprobar_proyecto.py`, que calcula el ID esperado y avisa si no
-  coincide).
+- Si actualizas desde una versión anterior sin campo `"key"` en `manifest.json`,
+  recarga la extensión una vez en `chrome://extensions` para adoptar el ID fijo
+  (`kmjgngkgeagldpddkklmdmllbkdopldb`).
 - `bridge_segundo_plano.vbs` está pendiente de retirar: no lo uses, arranca un
   bridge distinto al oficial.
 - `allowed_senders` filtra por el campo `from` del mensaje; no autentica.
@@ -99,10 +89,11 @@ pc_agent_mcp.py              servidor MCP (12 herramientas)
 mailbox_store.py             implementación del buzón
 despertar.py                 lógica del mensajero
 vigilante_cambios.py         registro de cambios del proyecto
-start.bat                    arranque oculto del bridge
+start.bat                    arranque oculto del bridge (auto-descarga Python portable si falta)
+preparar_portable.bat/.ps1   prepara runtime\python\ (Python 3.12 + websockets + watchdog)
 chat-local/                  chat web local
-zeroscript-extension/        extensión de Chrome
-*.example.json               configuraciones de ejemplo
+zeroscript-extension/        extensión de Chrome (con campo "key" fijo)
+*.example.json               configuraciones de ejemplo (rutas relativas)
 comprobar_proyecto.py        comprobación previa al commit
 ```
 
