@@ -68,6 +68,11 @@ from typing import Any
 
 import mailbox_store
 
+try:
+    import vigilante_cambios
+except Exception:
+    vigilante_cambios = None  # type: ignore[assignment]
+
 # MCP clients speak UTF-8 JSON over stdio. Windows' legacy console encoding would
 # otherwise corrupt accented paths/content and could even crash on characters it
 # cannot encode, so force UTF-8 on all three streams before anything is logged.
@@ -119,6 +124,7 @@ DEFAULT_AGENT_NAME = "zeroscript"
 DEFAULTS: dict[str, Any] = {
     "workspace": ".",
     "allow_outside_workspace": False,
+    "prompt_outside_workspace": True,
     "allow_shell": False,
     "allow_write": True,
     "shell_timeout_ms": 120000,
@@ -150,7 +156,7 @@ DEFAULTS: dict[str, Any] = {
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "pc_system_info",
-        "description": "Report the local computer: OS, user, home, workspace, current directory, drives, and whether shell/outside-workspace access is allowed. Call this once at the start of a task to learn the environment.",
+        "description": "Report the local computer: OS, user, home, workspace, current directory, drives, permissions, and the recent workspace file changes (with compact diffs and authors) recorded by the change watcher. Call this at the start of a task or before reviewing files to get up-to-date context.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
@@ -403,6 +409,10 @@ def load_config() -> dict[str, Any]:
         "ZS_PC_ALLOW_OUTSIDE_WORKSPACE",
         bool(cfg.get("allow_outside_workspace", DEFAULTS["allow_outside_workspace"])),
     )
+    cfg["prompt_outside_workspace"] = _env_bool(
+        "ZS_PC_PROMPT_OUTSIDE_WORKSPACE",
+        bool(cfg.get("prompt_outside_workspace", DEFAULTS["prompt_outside_workspace"])),
+    )
     cfg["allow_shell"] = _env_bool(
         "ZS_PC_ALLOW_SHELL",
         bool(cfg.get("allow_shell", DEFAULTS["allow_shell"])),
@@ -448,6 +458,9 @@ def load_config() -> dict[str, Any]:
         cfg["mailbox_dir"] = mailbox.absolute()
     cfg["allow_outside_workspace"] = bool(
         cfg.get("allow_outside_workspace", DEFAULTS["allow_outside_workspace"])
+    )
+    cfg["prompt_outside_workspace"] = bool(
+        cfg.get("prompt_outside_workspace", DEFAULTS["prompt_outside_workspace"])
     )
     cfg["allow_shell"] = bool(cfg.get("allow_shell", DEFAULTS["allow_shell"]))
     cfg["allow_write"] = bool(cfg.get("allow_write", DEFAULTS["allow_write"]))
@@ -520,6 +533,9 @@ def build_instructions() -> str:
         f"Workspace: {CFG['workspace']}. Relative paths resolve against it. {scope}",
         "Tools: pc_system_info, pc_list, pc_read, pc_write, pc_edit, pc_glob, "
         "pc_grep, pc_shell, msg_send, msg_inbox, msg_wait, msg_reply.",
+        "Call pc_system_info when you need project context or before reviewing "
+        "files: it includes the recent file changes (compact diffs and authors) "
+        "recorded by the change watcher.",
         'pc_read returns "LINE|CONTENT"; the "LINE|" prefix is not part of the '
         "file. Never include it in pc_edit.old_string. Read a file before "
         "editing it, and prefer pc_edit for small changes.",
@@ -547,6 +563,10 @@ def build_instructions() -> str:
         "check the mailbox, call msg_inbox first and answer only what is there.",
         shell,
         write_note,
+        "All file modifications (pc_write, pc_edit) and shell commands (pc_shell) "
+        "must stay inside the designated workspace folder. Any attempt to modify "
+        "files or target paths outside the workspace is automatically blocked and "
+        "requires explicit one-time user approval via a native security dialog.",
         "Outside the ZeroScript browser extension there is no browser "
         "confirmation prompt; the workspace and allow_shell settings in "
         "pc_agent_config.json are the safety boundary.",
@@ -556,7 +576,79 @@ def build_instructions() -> str:
 INSTRUCTIONS = build_instructions()
 
 
-def resolve_path(raw: str | None, *, must_exist: bool = False) -> Path:
+def _is_inside_workspace(path: Path) -> bool:
+    try:
+        path.resolve().relative_to(CFG["workspace"])
+        return True
+    except Exception:
+        try:
+            path.relative_to(CFG["workspace"])
+            return True
+        except Exception:
+            return False
+
+
+def _ask_user_outside_workspace_permission(tool_name: str, target_desc: str, detail: str = "") -> bool:
+    """Pide permiso nativo al usuario en Windows (Si/No, No por defecto) cada vez que se intenta un cambio fuera del workspace."""
+    mode = os.environ.get("ZS_PC_OUTSIDE_PROMPT_MODE", "").strip().lower()
+    if mode == "deny":
+        return False
+    if not CFG.get("prompt_outside_workspace", True):
+        return False
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        MB_YESNO = 0x00000004
+        MB_ICONWARNING = 0x00000030
+        MB_DEFBUTTON2 = 0x00000100  # "No" seleccionado por defecto
+        MB_TOPMOST = 0x00040000
+        MB_SETFOREGROUND = 0x00010000
+        IDYES = 6
+
+        agent = CFG.get("agent_name") or DEFAULT_AGENT_NAME
+        ws = str(CFG.get("workspace") or HERE)
+        extra = f"\nDetalle: {detail}\n" if detail else "\n"
+        msg = (
+            f"BLOQUEO PREVENTIVO - Cambio fuera de la carpeta designada\n\n"
+            f"Agente / IA: {agent}\n"
+            f"Herramienta: {tool_name}\n"
+            f"Objetivo: {target_desc}\n"
+            f"{extra}\n"
+            f"Carpeta designada (workspace):\n{ws}\n\n"
+            f"Si no pediste este cambio fuera de la carpeta designada, puede ser un error "
+            f"de la IA o una inyeccion de prompt.\n\n"
+            f"¿Autorizas ejecutar este cambio UNA SOLA VEZ?"
+        )
+        title = "ZeroScript - Permiso requerido fuera de carpeta designada"
+        flags = MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND
+        ans = int(ctypes.windll.user32.MessageBoxW(0, msg, title, flags))
+        return ans == IDYES
+    except Exception as exc:
+        log(f"outside-workspace permission dialog failed: {exc}")
+        return False
+
+
+def _require_outside_workspace_permission(tool_name: str, target_desc: str, detail: str = "") -> None:
+    """Bloquea un cambio fuera de la carpeta designada salvo que el usuario lo autorice explicitamente en ese instante."""
+    if _ask_user_outside_workspace_permission(tool_name, target_desc, detail):
+        log(f"outside-workspace change approved once by user: tool={tool_name} target={target_desc}")
+        return
+    reason = f" ({detail})" if detail else ""
+    raise PermissionError(
+        f"Bloqueado: '{tool_name}' intento operar fuera de la carpeta designada ({CFG['workspace']}) "
+        f"sobre {target_desc!r}{reason} y el permiso fue denegado. No reintentes esta accion sin orden explicita del usuario."
+    )
+
+
+def resolve_path(
+    raw: str | None,
+    *,
+    must_exist: bool = False,
+    for_mutation: bool = False,
+    tool_name: str = "",
+    allow_outside_check: bool = True,
+) -> Path:
     text = str(raw or ".").strip() or "."
     text = os.path.expandvars(os.path.expanduser(text))
     path = Path(text)
@@ -566,10 +658,16 @@ def resolve_path(raw: str | None, *, must_exist: bool = False) -> Path:
         path = path.resolve()
     except Exception:
         path = path.absolute()
-    if not CFG["allow_outside_workspace"]:
-        try:
-            path.relative_to(CFG["workspace"])
-        except ValueError:
+    if allow_outside_check and not _is_inside_workspace(path):
+        if for_mutation:
+            # Cualquier cambio (pc_write / pc_edit) fuera de la carpeta designada se bloquea
+            # y exige permiso explicito del usuario cada vez, incluso si allow_outside_workspace fuera true.
+            _require_outside_workspace_permission(
+                tool_name or "pc_write",
+                str(path),
+                "ruta fuera de la carpeta designada",
+            )
+        elif not CFG["allow_outside_workspace"]:
             raise ValueError(
                 f"path is outside the configured workspace ({CFG['workspace']}); "
                 "set allow_outside_workspace to true in pc_agent_config.json to allow it"
@@ -683,6 +781,20 @@ def is_probably_text(path: Path) -> bool:
         return False
 
 
+def _workspace_can_see_watcher() -> bool:
+    """True si el workspace actual tiene permiso para ver el registro de cambios del proyecto."""
+    if CFG["allow_outside_workspace"]:
+        return True
+    ws = CFG["workspace"]
+    if ws == HERE:
+        return True
+    try:
+        HERE.relative_to(ws)
+        return True
+    except ValueError:
+        return False
+
+
 def tool_system_info() -> str:
     drives: list[str] = []
     if os.name == "nt":
@@ -695,7 +807,7 @@ def tool_system_info() -> str:
         top_level = sorted(p.name + ("/" if p.is_dir() else "") for p in CFG["workspace"].iterdir())[:60]
     except OSError:
         pass
-    info = {
+    info: dict[str, Any] = {
         "platform": platform.platform(),
         "system": platform.system(),
         "release": platform.release(),
@@ -706,13 +818,22 @@ def tool_system_info() -> str:
         "workspace": str(CFG["workspace"]),
         "cwd": str(Path.cwd()),
         "allow_outside_workspace": CFG["allow_outside_workspace"],
+        "prompt_outside_workspace": CFG["prompt_outside_workspace"],
         "allow_shell": CFG["allow_shell"],
         "allow_write": CFG["allow_write"],
         "shell": "PowerShell" if os.name == "nt" else "bash",
         "drives": drives,
         "workspace_top_level": top_level,
     }
-    return "PC environment:\n" + json.dumps(info, indent=2, ensure_ascii=False)
+    recent_block = ""
+    if vigilante_cambios is not None and _workspace_can_see_watcher():
+        try:
+            watcher_meta, recent_text = vigilante_cambios.get_watcher_context(limit=12, max_chars=6000)
+            info["change_watcher"] = watcher_meta
+            recent_block = "\n\n" + recent_text
+        except Exception as exc:
+            log(f"change watcher context unavailable: {exc}")
+    return truncate("PC environment:\n" + json.dumps(info, indent=2, ensure_ascii=False) + recent_block)
 
 
 def tool_list(args: dict[str, Any]) -> str:
@@ -768,7 +889,7 @@ def tool_write(args: dict[str, Any]) -> str:
         raise PermissionError(
             "pc_write is disabled by allow_write=false in pc_agent_config.json"
         )
-    path = resolve_path(args.get("path"))
+    path = resolve_path(args.get("path"), for_mutation=True, tool_name="pc_write")
     content = args.get("content")
     if not isinstance(content, str):
         raise ValueError("content must be a string")
@@ -779,8 +900,30 @@ def tool_write(args: dict[str, Any]) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
     elif not path.parent.exists():
         raise FileNotFoundError(f"parent directory does not exist: {path.parent}")
+    existed = path.exists()
+    prev_text: str | None = None
+    if vigilante_cambios is not None:
+        try:
+            if existed:
+                prev_text = vigilante_cambios.read_text_snapshot(path)
+            vigilante_cambios.record_mcp_attribution(path, CFG["agent_name"], tool="pc_write")
+        except Exception:
+            pass
     data = content.encode("utf-8")
     _atomic_write_bytes(path, data)
+    if vigilante_cambios is not None:
+        try:
+            if not vigilante_cambios.is_vigilante_running():
+                vigilante_cambios.record_mcp_change(
+                    path,
+                    agent=CFG["agent_name"],
+                    tool="pc_write",
+                    old_text=prev_text,
+                    new_text=content,
+                    existed_before=existed,
+                )
+        except Exception:
+            pass
     return f"Wrote {len(data)} bytes to {display_path(path)}"
 
 
@@ -789,7 +932,7 @@ def tool_edit(args: dict[str, Any]) -> str:
         raise PermissionError(
             "pc_edit is disabled by allow_write=false in pc_agent_config.json"
         )
-    path = resolve_path(args.get("path"), must_exist=True)
+    path = resolve_path(args.get("path"), must_exist=True, for_mutation=True, tool_name="pc_edit")
     if not path.is_file():
         raise IsADirectoryError(f"not a file: {path}")
     old = args.get("old_string")
@@ -831,7 +974,25 @@ def tool_edit(args: dict[str, Any]) -> str:
         )
     updated = text.replace(old, _to_file_eol(new), -1 if replace_all else 1)
     data, kept_encoding = _encode_text(updated, encoding, had_bom)
+    if vigilante_cambios is not None:
+        try:
+            vigilante_cambios.record_mcp_attribution(path, CFG["agent_name"], tool="pc_edit")
+        except Exception:
+            pass
     _atomic_write_bytes(path, data)
+    if vigilante_cambios is not None:
+        try:
+            if not vigilante_cambios.is_vigilante_running():
+                vigilante_cambios.record_mcp_change(
+                    path,
+                    agent=CFG["agent_name"],
+                    tool="pc_edit",
+                    old_text=text,
+                    new_text=updated,
+                    existed_before=True,
+                )
+        except Exception:
+            pass
     note = "" if kept_encoding else " (file re-encoded as UTF-8: its original encoding cannot hold the new text)"
     return f"Edited {display_path(path)}: replaced {count if replace_all else 1} occurrence(s){note}"
 
@@ -908,15 +1069,32 @@ def tool_glob(args: dict[str, Any]) -> str:
         raise NotADirectoryError(f"not a directory: {base}")
     limit = int(args.get("limit") or 200)
     if Path(pattern).is_absolute():
-        candidates = glob_module.glob(pattern, recursive=True)
-        files: list[Path] = []
-        for candidate in candidates:
-            try:
-                path = Path(candidate).resolve()
-            except Exception:
-                continue
-            if path.is_file():
-                files.append(path)
+        if not CFG["allow_outside_workspace"]:
+            # Si el prefijo fijo del patron cae fuera del workspace, rechazar o filtrar
+            candidates = glob_module.glob(pattern, recursive=True)
+            files = []
+            for candidate in candidates:
+                try:
+                    path = Path(candidate).resolve()
+                except Exception:
+                    continue
+                if path.is_file() and _is_inside_workspace(path):
+                    files.append(path)
+            if not files and not _is_inside_workspace(Path(pattern)):
+                raise ValueError(
+                    f"pattern is outside the configured workspace ({CFG['workspace']}); "
+                    "set allow_outside_workspace to true in pc_agent_config.json to allow it"
+                )
+        else:
+            candidates = glob_module.glob(pattern, recursive=True)
+            files = []
+            for candidate in candidates:
+                try:
+                    path = Path(candidate).resolve()
+                except Exception:
+                    continue
+                if path.is_file():
+                    files.append(path)
     else:
         files = iter_glob_files(base, pattern)
     files.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
@@ -1018,6 +1196,67 @@ def _kill_process_tree(proc: subprocess.Popen[bytes]) -> None:
             pass
 
 
+_WIN_ABS_PATH_RE = re.compile(
+    r'"([A-Za-z]:[\\/][^"\r\n]*)"'
+    r"|'([A-Za-z]:[\\/][^'\r\n]*)'"
+    r"|(?<![A-Za-z0-9_])([A-Za-z]:[\\/][^\s\"'`;|><),]*)"
+)
+_UNC_PATH_RE = re.compile(r'(?:^|[\s"\'=])(\\\\[A-Za-z0-9_.-]+\\[^\s"\'`;|><)]*)')
+_REL_PARENT_TOKEN_RE = re.compile(r'(?:^|[\s"\'=])((?:\.\.[\\/])+[^\s"\'`;|><)]*|\.\.)(?=$|[\s"\'`;|><)])')
+_OUTSIDE_ENV_RE = re.compile(
+    r'(\$env:(?:USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|WINDIR|SYSTEMROOT|PROGRAMFILES|PROGRAMDATA|HOMEDRIVE|HOMEPATH|PUBLIC)\b'
+    r'|%(?:USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|WINDIR|SYSTEMROOT|PROGRAMFILES|PROGRAMDATA|PUBLIC)%'
+    r'|\$HOME\b'
+    r'|(?<=[\s"\'=])~(?=[\\/]|$|\s)'
+    r'|\b(?:HKCU|HKLM|HKCR|HKU):)',
+    flags=re.IGNORECASE,
+)
+
+
+def _shell_outside_workspace_reasons(command: str, cwd: Path) -> list[str]:
+    """Detecta si un comando de pc_shell apunta o puede salir fuera de la carpeta designada."""
+    reasons: list[str] = []
+    if not _is_inside_workspace(cwd):
+        reasons.append(f"cwd fuera de la carpeta designada ({cwd})")
+
+    for m in _WIN_ABS_PATH_RE.finditer(command):
+        raw_p = (m.group(1) or m.group(2) or m.group(3) or "").strip()
+        if not raw_p:
+            continue
+        try:
+            expanded = os.path.expandvars(os.path.expanduser(raw_p))
+            candidate = Path(expanded).resolve()
+        except Exception:
+            candidate = Path(raw_p)
+        if not _is_inside_workspace(candidate):
+            reasons.append(f"ruta fuera de la carpeta designada ({raw_p})")
+
+    for m in _UNC_PATH_RE.finditer(command):
+        reasons.append(f"ruta de red externa ({m.group(1)})")
+
+    for m in _REL_PARENT_TOKEN_RE.finditer(command):
+        tok = m.group(1).strip()
+        try:
+            target = (cwd / tok).resolve()
+            outside = not _is_inside_workspace(target)
+        except Exception:
+            outside = True
+        if outside:
+            reasons.append(f"subida de directorio fuera de la carpeta designada ({tok})")
+
+    for m in _OUTSIDE_ENV_RE.finditer(command):
+        reasons.append(f"variable/ruta del sistema fuera de la carpeta ({m.group(1)})")
+
+    # Deduplicar conservando el orden
+    seen: set[str] = set()
+    unique: list[str] = []
+    for r in reasons:
+        if r not in seen:
+            seen.add(r)
+            unique.append(r)
+    return unique
+
+
 def tool_shell(args: dict[str, Any]) -> str:
     if not CFG["allow_shell"]:
         raise PermissionError(
@@ -1026,7 +1265,14 @@ def tool_shell(args: dict[str, Any]) -> str:
     command = args.get("command")
     if not isinstance(command, str) or not command.strip():
         raise ValueError("command is required")
-    cwd = resolve_path(args.get("cwd"))
+    cwd = resolve_path(args.get("cwd"), allow_outside_check=False)
+    outside_reasons = _shell_outside_workspace_reasons(command, cwd)
+    if outside_reasons:
+        _require_outside_workspace_permission(
+            "pc_shell",
+            command.strip()[:240],
+            "; ".join(outside_reasons[:3]),
+        )
     if not cwd.is_dir():
         raise NotADirectoryError(f"working directory does not exist: {cwd}")
     try:
@@ -1364,13 +1610,37 @@ def dispatch_tool(name: str, args: dict[str, Any]) -> str:
     handler = TOOL_HANDLERS.get(name)
     if handler is None:
         return f"ERROR: unknown PC tool '{name}'. Use list_commands to see the available tools."
+    safe_args = args if isinstance(args, dict) else {}
     try:
-        result = handler(args or {})
+        result = handler(safe_args)
         log(f"{name} ok")
+        if vigilante_cambios is not None and _workspace_can_see_watcher():
+            try:
+                vigilante_cambios.record_mcp_action(
+                    CFG["agent_name"],
+                    name,
+                    safe_args,
+                    result,
+                    is_error=False,
+                )
+            except Exception:
+                pass
         return result
     except Exception as exc:
         log(f"{name} failed: {exc}")
-        return f"ERROR: {type(exc).__name__}: {exc}"
+        err_text = f"ERROR: {type(exc).__name__}: {exc}"
+        if vigilante_cambios is not None and _workspace_can_see_watcher():
+            try:
+                vigilante_cambios.record_mcp_action(
+                    CFG["agent_name"],
+                    name,
+                    safe_args,
+                    err_text,
+                    is_error=True,
+                )
+            except Exception:
+                pass
+        return err_text
 
 
 def send(payload: dict[str, Any]) -> None:
@@ -1468,8 +1738,9 @@ def check_setup() -> int:
     print(f"Workspace: {workspace}")
     if not workspace.is_dir():
         problems.append(f"workspace is not a directory: {workspace}")
-    print(f"  allow_outside_workspace: {CFG['allow_outside_workspace']}")
-    print(f"  allow_shell:             {CFG['allow_shell']}")
+    print(f"  allow_outside_workspace:  {CFG['allow_outside_workspace']}")
+    print(f"  prompt_outside_workspace: {CFG['prompt_outside_workspace']}")
+    print(f"  allow_shell:              {CFG['allow_shell']}")
     print(f"  allow_write:             {CFG['allow_write']}")
     print(f"  shell_timeout_ms:        {CFG['shell_timeout_ms']}")
     print(f"  max_read_bytes:          {CFG['max_read_bytes']}")

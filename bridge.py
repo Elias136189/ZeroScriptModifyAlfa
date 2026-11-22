@@ -453,18 +453,12 @@ def config_remove_server(server_id):
 def restart_self():
     """Replace this process with a fresh one so config.json is reloaded from
     scratch. Children are killed first to free their stdio pipes / ports before
-    the new instance claims them. Never returns on success (os.execv)."""
+    the new instance claims them. Never returns on success."""
     log("restarting bridge to load new server config...", "yl")
-    try:
-        for c in mgr.clients.values():
-            c.stop()
-    except Exception:
-        pass
-    if _log_file:
-        try:
-            _log_file.flush()
-        except Exception:
-            pass
+    _shutdown_all("restart_self", stop_chat=False)
+    if os.environ.get("ZS_MANAGED_BY_START_BAT") == "1":
+        # start.bat mantiene la ventana CMD abierta y relanza bridge.py en codigo 42
+        os._exit(42)
     # sys.argv[0] may be relative ('bridge.py'); make it absolute so the restart
     # works regardless of the current working directory.
     argv = list(sys.argv)
@@ -1301,9 +1295,11 @@ async def wake_watch():
         daemon=True,
     )
     thread.start()
-    targets = watch.get("targets") or config.get("default_targets") or []
-    if isinstance(targets, str):
-        targets = [targets]
+    targets = despertar.resolve_targets(
+        config,
+        watch.get("targets") or config.get("default_targets"),
+        active_only=True,
+    )
     log(f"mensajero: {despertar.DEFAULT_CONFIG_FILE.name} cada "
         f"{watch.get('interval_seconds', 2.5)} s; destinos: "
         f"{', '.join(str(t) for t in targets) or 'ninguno'}", "dim")
@@ -1369,16 +1365,199 @@ async def main():
         await asyncio.Future()
 
 
+_JOB_HANDLE = None
+_CTRL_HANDLER_REF = None
+_SHUTDOWN_LOCK = threading.Lock()
+_SHUTDOWN_DONE = False
+
+
+def _attach_kill_on_close_job():
+    """Asigna bridge.py a un Windows Job Object con KILL_ON_JOB_CLOSE.
+
+    Si la ventana de CMD se cierra o el proceso muere, el kernel de Windows
+    termina automaticamente todos los procesos hijos (pc_agent_mcp.py, addons,
+    CLIs de despertar) sin dejar procesos huerfanos.
+    """
+    global _JOB_HANDLE
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+        info.BasicLimitInformation.LimitFlags = 0x2000
+        JobObjectExtendedLimitInformation = 9
+        ok = kernel32.SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        )
+        if not ok:
+            kernel32.CloseHandle(job)
+            return
+        if not kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()):
+            kernel32.CloseHandle(job)
+            return
+        _JOB_HANDLE = job
+    except Exception:
+        pass
+
+
+def _stop_chat_local():
+    """Detiene chat-local\\server.py si start.bat lo arranco para esta sesion."""
+    if os.environ.get("ZS_STOP_CHAT_ON_EXIT", "").strip() != "1":
+        return
+    try:
+        chat_port = int(os.environ.get("CHAT_LOCAL_PORT", "8765") or "8765")
+    except Exception:
+        chat_port = 8765
+    pid_path = os.path.join(HERE, "chat-local", f"chat-{chat_port}.pid")
+    chat_pid = None
+    try:
+        if os.path.isfile(pid_path):
+            with open(pid_path, "r", encoding="utf-8", errors="ignore") as fh:
+                chat_pid = int(fh.read().strip())
+    except Exception:
+        chat_pid = None
+
+    if chat_pid:
+        verified = False
+        try:
+            import urllib.request
+            with urllib.request.urlopen(f"http://127.0.0.1:{chat_port}/api/health", timeout=0.5) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                verified = isinstance(data, dict) and data.get("app") == "chat-local"
+        except Exception:
+            verified = False
+        if verified:
+            try:
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(chat_pid)],
+                        capture_output=True,
+                        timeout=3,
+                    )
+                else:
+                    os.kill(chat_pid, 15)
+                log(f"chat-local stopped (pid {chat_pid})", "yl")
+            except Exception:
+                pass
+        try:
+            if os.path.isfile(pid_path):
+                os.remove(pid_path)
+        except Exception:
+            pass
+
+
+def _shutdown_all(reason="shutdown", stop_chat=True):
+    """Apaga de forma limpia todos los servidores MCP, el mensajero y el chat local."""
+    global _SHUTDOWN_DONE
+    with _SHUTDOWN_LOCK:
+        if _SHUTDOWN_DONE:
+            return
+        _SHUTDOWN_DONE = True
+    log(f"shutting down ({reason})...", "yl")
+    try:
+        for c in list(mgr.clients.values()):
+            try:
+                c.stop()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        import despertar
+        despertar.terminate_active()
+    except Exception:
+        pass
+    if stop_chat:
+        _stop_chat_local()
+    log("===== BRIDGE STOP =====", "cy")
+    if _log_file:
+        try:
+            _log_file.flush()
+        except Exception:
+            pass
+
+
+def _install_console_close_handler():
+    """Al cerrar la ventana de CMD con la X (CTRL_CLOSE_EVENT), apaga todo el MCP y chat."""
+    global _CTRL_HANDLER_REF
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        HANDLER_ROUTINE = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+        CTRL_CLOSE_EVENT = 2
+        CTRL_LOGOFF_EVENT = 5
+        CTRL_SHUTDOWN_EVENT = 6
+
+        def _on_ctrl(ctrl_type):
+            if ctrl_type in (CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT):
+                _shutdown_all("console closed", stop_chat=True)
+                os._exit(0)
+            return False
+
+        _CTRL_HANDLER_REF = HANDLER_ROUTINE(_on_ctrl)
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(_CTRL_HANDLER_REF, True)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
+    _attach_kill_on_close_job()
+    _install_console_close_handler()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log("shutting down...", "yl")
-        for c in mgr.clients.values():
-            c.stop()
+        _shutdown_all("Ctrl+C", stop_chat=True)
     except Exception as e:
         log(f"FATAL ERROR: {type(e).__name__}: {e}", "rd")
         import traceback
         log(traceback.format_exc(), "rd")
     finally:
-        log("===== BRIDGE STOP =====", "cy")
+        _shutdown_all("exit", stop_chat=True)

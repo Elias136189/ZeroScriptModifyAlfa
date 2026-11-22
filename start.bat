@@ -166,8 +166,8 @@ if not defined OLDPID goto :port_free
 
 REM Comprobar que el proceso en el puerto realmente es bridge.py antes de cerrarlo
 set "IS_BRIDGE=0"
-for /f "tokens=*" %%C in ('powershell -NoProfile -Command "$p=Get-CimInstance Win32_Process -Filter \"ProcessId=!OLDPID!\" -ErrorAction SilentlyContinue; if($p -and $p.CommandLine -like '*bridge.py*'){ 'YES' } else { 'NO' }" 2^>nul') do (
-    if /i "%%C"=="YES" set "IS_BRIDGE=1"
+for /f "usebackq tokens=*" %%C in (`powershell -NoProfile -Command "$f='ProcessId='+$env:OLDPID; $p=Get-CimInstance Win32_Process -Filter $f -EA 0; $p.CommandLine -like '*bridge.py*'" 2^>nul`) do (
+    if /i "%%C"=="True" set "IS_BRIDGE=1"
 )
 if "%IS_BRIDGE%"=="0" goto :port_other_app
 
@@ -195,51 +195,41 @@ goto :finish_fail
 
 :port_free
 echo.
-if "%OPT_CONSOLE%"=="0" if defined PYW_EXE (
-    echo  ############################################################
-    echo  ##                                                        ##
-    echo  ##   El bridge se lanza OCULTO ^(pythonw.exe^).             ##
-    echo  ##   Esta ventana de inicio puede cerrarse;               ##
-    echo  ##   el bridge y el mensajero siguen en segundo plano.    ##
-    echo  ##                                                        ##
-    echo  ############################################################
-    echo.
-)
+echo  ############################################################
+echo  ##                                                        ##
+echo  ##   MANTEN ESTA VENTANA ABIERTA mientras uses ZeroScript ##
+echo  ##   Si cierras esta ventana ^(X o Ctrl+C^), todo el        ##
+echo  ##   bridge, MCP y chat local se apagan automaticamente.  ##
+echo  ##                                                        ##
+echo  ############################################################
+echo.
 
-if "%OPT_NOCHAT%"=="0" call :start_chat
+if "%OPT_NOCHAT%"=="0" (
+    set "ZS_STOP_CHAT_ON_EXIT=1"
+    call :start_chat
+) else (
+    set "ZS_STOP_CHAT_ON_EXIT=0"
+)
 call :check_despertar
 call :ensure_vigilante
 
-if "%OPT_CONSOLE%"=="1" goto :launch_console
-if not defined PYW_EXE goto :launch_console
-call :log "Launching bridge.py hidden with !PYW_EXE!"
-start "" "!PYW_EXE!" "%ROOT%bridge.py"
-goto :launch_wait
-
-:launch_console
-call :log "Launching bridge.py in console with !PY_EXE!"
-start "ZeroScript Bridge" "!PY_EXE!" "%ROOT%bridge.py"
-
-:launch_wait
-ping -n 4 127.0.0.1 >nul 2>nul
-set "BRPORT="
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":%ZS_BRIDGE_PORT% " ^| findstr LISTENING 2^>nul') do set "BRPORT=%%a"
-call :log "bridge.py launched - listener pid !BRPORT!"
-
-echo.
-if defined BRPORT (
-    echo   Bridge ACTIVO en ws://127.0.0.1:%ZS_BRIDGE_PORT%  ^(pid !BRPORT!^)
-    echo   Python: [!PY_MODE!] !PY_VER!
-    echo   Logs: logs\bridge_debug.log y logs\despertar.log
-) else (
-    echo   AVISO: el bridge no responde todavia en el puerto %ZS_BRIDGE_PORT%.
-    echo   Revisa logs\bridge_debug.log y logs\start.log
+set "ZS_MANAGED_BY_START_BAT=1"
+:run_bridge
+call :log "Running bridge.py in foreground with !PY_EXE!"
+"!PY_EXE!" "%ROOT%bridge.py"
+set "BR_EXIT=%errorlevel%"
+if "%BR_EXIT%"=="42" (
+    echo.
+    echo   Reiniciando bridge con la nueva configuracion...
+    call :log "bridge.py requested reload (exit 42); restarting in same console."
+    goto :run_bridge
 )
-if "%OPT_NOPAUSE%"=="0" (
-    echo   Presiona una tecla para cerrar SOLO esta ventana de inicio.
-    pause >nul
+
+if "%OPT_NOCHAT%"=="0" if exist "%ROOT%chat-local\lanzar_chat.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%chat-local\lanzar_chat.ps1" -Port %CHAT_LOCAL_PORT% -Stop >nul 2>nul
 )
-exit /b 0
+call :log "start.bat finished (bridge exit !BR_EXIT!)."
+exit /b %BR_EXIT%
 
 REM --- Errores fatales -------------------------------------------------------
 :err_no_bridge
@@ -281,7 +271,6 @@ call :log "FATAL: websockets unavailable."
 goto :finish_fail
 
 :finish_fail
-if "%OPT_NOPAUSE%"=="0" pause
 exit /b 1
 
 REM --- Subrutinas ------------------------------------------------------------

@@ -869,14 +869,41 @@
     return A.toolList;
   }
 
+  // Detecta rutas absolutas, subidas '..' o variables de sistema que puedan salir
+  // de la carpeta designada, para exigir confirmacion siempre (incluso si confirmPc=false).
+  function looksOutsideWorkspace(name, args) {
+    const a = args || {};
+    const checkPath = (p) => {
+      const s = String(p || "").trim();
+      if (!s) return false;
+      if (/^[A-Za-z]:[\\/]/.test(s) || /^\\\\/.test(s) || /^~\b/.test(s)) return true;
+      if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(s)) return true;
+      if (/%(?:USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|WINDIR|PROGRAMFILES)%/i.test(s)) return true;
+      return false;
+    };
+    if (name === "pc_write" || name === "pc_edit") return checkPath(a.path);
+    if (name === "pc_shell") {
+      if (checkPath(a.cwd)) return true;
+      const cmd = String(a.command || "");
+      if (/(?<![A-Za-z0-9_])[A-Za-z]:[\\/]/.test(cmd) || /(?:^|[\s"'=])\.\.(?:[\\/]|$|[\s"';|)])/.test(cmd)) return true;
+      if (/\$env:(?:USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|WINDIR|PROGRAMFILES)\b/i.test(cmd)) return true;
+      if (/%(?:USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|WINDIR|PROGRAMFILES)%/i.test(cmd)) return true;
+    }
+    return false;
+  }
+
   // Local-PC mutations are confirmed by the USER in the browser before they run.
-  // The panel can turn this off (zsConfirmPc); the bridge itself stays localhost.
-  function confirmPcCall(name, args) {
+  // The panel can turn this off (zsConfirmPc) for inside-workspace edits, but
+  // outside-workspace targets ALWAYS ask for confirmation.
+  function confirmPcCall(name, args, outsideWarn) {
     const a = args || {};
     const clip = (s, n) => {
       const t = String(s == null ? "" : s);
       return t.length > n ? t.slice(0, n) + "…" : t;
     };
+    const warnHeader = outsideWarn
+      ? "⚠️ BLOQUEO PREVENTIVO: Cambio fuera de la carpeta designada (posible error o prompt injection).\n\n"
+      : "";
     let what;
     if (name === "pc_write") {
       what = `write this file:\n\n${a.path || "(no path)"}\n\n(${String(a.content || "").length} characters)`;
@@ -887,7 +914,7 @@
         (a.cwd ? `\n\n(in ${a.cwd})` : "");
     }
     try {
-      return window.confirm(`ZeroScript wants to ${what}\n\nAllow?`);
+      return window.confirm(`${warnHeader}ZeroScript wants to ${what}\n\nAllow ONCE?`);
     } catch {
       return false;
     }
@@ -1007,9 +1034,11 @@
     // for this call: the model must not retry it behind the user's back.
     // Placed here, after the synthetic commands and the unknown-name check, so a
     // hallucinated or malformed call is rejected without a pointless prompt.
-    if (A.confirmPc && (bareName === "pc_write" || bareName === "pc_edit" || bareName === "pc_shell")) {
-      if (!confirmPcCall(bareName, args)) {
-        diag("pc.declined", { name: bareName });
+    const isMutatingPc = bareName === "pc_write" || bareName === "pc_edit" || bareName === "pc_shell";
+    const outsideWarn = isMutatingPc && looksOutsideWorkspace(bareName, args);
+    if (isMutatingPc && (A.confirmPc || outsideWarn)) {
+      if (!confirmPcCall(bareName, args, outsideWarn)) {
+        diag("pc.declined", { name: bareName, outsideWarn });
         ui.toast("Action cancelled.");
         return `ERROR: the user DECLINED this '${bareName}' call in the browser, so nothing was changed or run. Do not retry it - ask the user what they want instead.`;
       }
@@ -2481,7 +2510,7 @@
       root.innerHTML = `
         <div id="zs-bar">
           <span id="zs-dot" class="off" title=""></span>
-          <span id="zs-brand">ZeroScript <span class="zs-free">v${EXT_VERSION}</span></span>
+          <span id="zs-brand">ZeroScriptModify <span class="zs-free">v${EXT_VERSION}</span></span>
           <span id="zs-state"></span>
           <button id="zs-action"></button>
           <button id="zs-stop" hidden>■ Stop</button>
@@ -2699,7 +2728,7 @@
         mcpList += `<div class="zs-mcp-item"><span class="zs-mcp-health zs-mcp-health-${healthClass}" title="${healthTitle}"></span><div class="zs-mcp-info"><span class="zs-mcp-name">${esc(s.name)}</span><span class="zs-mcp-url">${esc(s.command || s.id)}</span></div><button class="zs-mcp-remove" data-id="${esc(s.id)}" title="Remove">✕</button></div>`;
       });
       menuEl.innerHTML =
-        `<div class="zs-menu-head"><span class="zs-menu-logo">ZeroScript</span><span class="zs-menu-tag">v${EXT_VERSION}</span></div>
+        `<div class="zs-menu-head"><span class="zs-menu-logo">ZeroScriptModify</span><span class="zs-menu-tag">v${EXT_VERSION}</span></div>
          <section class="zs-menu-sec">
            <div class="zs-sec-label"><span>Switch AI</span></div>
            ${sites}
@@ -2831,7 +2860,7 @@
         ? `<a id="zs-setup-video" href="${VIDEO_URL}" target="_blank" rel="noopener">▶︎ Watch tutorial</a>`
         : "";
       setupCard.innerHTML =
-        `<div id="zs-setup-head"><span id="zs-setup-logo">ZeroScript</span><span id="zs-setup-tag">Setup</span></div>` +
+        `<div id="zs-setup-head"><span id="zs-setup-logo">ZeroScriptModify</span><span id="zs-setup-tag">Setup</span></div>` +
         `<div id="zs-setup-sub">The <b>Bridge</b> is what connects this chat to your PC. Three steps and you're running.</div>` +
         `<ol id="zs-setup-steps">` +
           `<li>Download the Bridge from GitHub</li>` +

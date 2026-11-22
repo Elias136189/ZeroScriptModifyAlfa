@@ -2,6 +2,7 @@
   "workspace": ".",
   "mailbox_dir": "~/Documents/AI-Shared/mailbox",
   "allow_outside_workspace": false,
+  "prompt_outside_workspace": true,
   "allow_shell": false,
   "allow_write": true,
   "shell_timeout_ms": 120000,

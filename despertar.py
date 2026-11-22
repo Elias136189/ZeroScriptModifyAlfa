@@ -67,7 +67,7 @@ DEFAULT_PROMPT = (
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": True,
-    "default_targets": ["claude", "opencode"],
+    "default_targets": ["*"],
     "min_seconds_between": 60,
     "max_per_hour": 6,
     "max_per_day": 20,
@@ -83,18 +83,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "watch": {
         "enabled": True,
         "interval_seconds": 2.5,
-        "targets": ["claude", "opencode"],
+        "targets": ["*"],
     },
     "prompt": DEFAULT_PROMPT,
     "targets": {
-        "claude": {
-            "method": "cli",
-            "fallback": [],
-            "process": ["claude", "Claude"],
-            "title": "Claude",
-            "command": ["claude", "-p", "{prompt}"],
-            "cli_timeout_seconds": 240,
-        },
         "opencode": {
             "method": "cli",
             "fallback": [],
@@ -102,6 +94,38 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "title": "OpenCode",
             "command": ["opencode", "run", "{prompt}"],
             "cli_timeout_seconds": 240,
+        },
+        "antigravity": {
+            "method": "window",
+            "fallback": [],
+            "note": "Antigravity por ventana (no aplica perfil restringido). Si instalas el CLI 'agy', cambia method a 'cli'.",
+            "process": ["Antigravity", "antigravity"],
+            "title": "Antigravity",
+            "command": ["agy", "-p", "{prompt}"],
+            "cli_timeout_seconds": 240,
+            "window_reply_timeout_seconds": 90,
+        },
+        "claude-code": {
+            "method": "cli",
+            "fallback": [],
+            "command": ["claude", "-p", "{prompt}"],
+            "cli_timeout_seconds": 240,
+        },
+        "codex": {
+            "method": "cli",
+            "fallback": [],
+            "command": ["codex", "exec", "{prompt}"],
+            "cli_timeout_seconds": 240,
+        },
+        "claude": {
+            "method": "none",
+            "fallback": [],
+            "note": "Claude Desktop con cuenta gratis solo tiene chat: no hay CLI ni despertar automatico.",
+            "process": ["claude", "Claude"],
+            "title": "Claude",
+            "command": ["claude", "-p", "{prompt}"],
+            "cli_timeout_seconds": 240,
+            "window_reply_timeout_seconds": 90,
         },
     },
 }
@@ -486,6 +510,110 @@ def target_config(config: dict[str, Any], target: str) -> dict[str, Any] | None:
     return None
 
 
+def resolve_targets(
+    config: dict[str, Any],
+    raw_targets: list[str] | str | None = None,
+    *,
+    active_only: bool = False,
+) -> list[str]:
+    """Resuelve destinos configurados, expandiendo '*', 'all' o 'todos'."""
+    if raw_targets is None:
+        items: list[str] = []
+    elif isinstance(raw_targets, str):
+        items = [raw_targets]
+    else:
+        items = [str(item) for item in raw_targets if str(item).strip()]
+
+    if not items:
+        fallback = config.get("default_targets") or []
+        items = [fallback] if isinstance(fallback, str) else [str(t) for t in fallback]
+
+    configured = config.get("targets") or {}
+    resolved: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name: str) -> None:
+        clean = str(name).strip()
+        if not clean:
+            return
+        key = clean.casefold()
+        if key in seen:
+            return
+        if active_only:
+            cfg = target_config(config, clean)
+            if cfg is not None and str(cfg.get("method") or "cli").strip().lower() == "none":
+                return
+        seen.add(key)
+        resolved.append(clean)
+
+    for item in items:
+        token = item.strip()
+        if token.casefold() in ("*", "all", "todos"):
+            for name, cfg in configured.items():
+                if not isinstance(cfg, dict):
+                    continue
+                if str(cfg.get("method") or "cli").strip().lower() == "none":
+                    continue
+                _add(str(name))
+        else:
+            _add(token)
+    return resolved
+
+
+def resolve_cli_executable(command: Any) -> str | None:
+    """Resuelve el ejecutable del primer elemento de ``command`` si existe."""
+    if not command or not isinstance(command, list) or not command[0]:
+        return None
+    raw = os.path.expandvars(os.path.expanduser(str(command[0]).strip()))
+    if not raw:
+        return None
+    resolved = shutil.which(raw)
+    if resolved:
+        return resolved
+    if Path(raw).is_file():
+        return str(Path(raw))
+    if os.name == "nt":
+        base = Path(raw).name.lower()
+        local_app = os.environ.get("LOCALAPPDATA", "")
+        if local_app:
+            candidates: list[Path] = []
+            if base in ("opencode", "opencode.exe"):
+                candidates.append(Path(local_app) / "Programs" / "ZeroScript" / "opencode.exe")
+            elif base in ("agy", "agy.exe", "agy.cmd"):
+                candidates.extend([
+                    Path(local_app) / "Programs" / "antigravity" / "bin" / "agy.cmd",
+                    Path(local_app) / "Programs" / "antigravity" / "bin" / "agy.exe",
+                ])
+            for candidate in candidates:
+                if candidate.is_file():
+                    return str(candidate)
+    return None
+
+
+def target_availability(cfg: dict[str, Any] | None) -> tuple[bool, str]:
+    """Devuelve (disponible, descripcion) para mostrar en estado o ayuda."""
+    if not isinstance(cfg, dict):
+        return False, "sin configuracion"
+    method = str(cfg.get("method") or "cli").strip().lower()
+    if method == "none":
+        return False, "manual (desactivado)"
+    if method == "cli":
+        cmd = cfg.get("command")
+        if not cmd or not isinstance(cmd, list):
+            return False, "falta 'command'"
+        resolved = resolve_cli_executable(cmd)
+        if resolved:
+            return True, f"disponible ({Path(resolved).name})"
+        return False, f"CLI no instalado ({cmd[0]})"
+    if method == "window":
+        processes = cfg.get("process") or []
+        if isinstance(processes, str):
+            processes = [processes]
+        label = ", ".join(str(p) for p in processes) if processes else "sin proceso"
+        return True, f"ventana ({label})"
+    return False, f"metodo desconocido ({method})"
+
+
 def acquire_lock(path: Path) -> bool:
     for _ in range(2):
         try:
@@ -612,14 +740,12 @@ def wake_cli(cfg: dict[str, Any], prompt: str, timeout: float) -> tuple[bool, st
     argv[0] = os.path.expandvars(os.path.expanduser(argv[0]))
     # En Windows los CLI de npm son .cmd/.bat y CreateProcess no los ejecuta
     # directamente: hay que resolverlos y pasar por cmd.exe.
-    resolved = shutil.which(argv[0])
-    if not resolved and os.name == "nt" and Path(argv[0]).name.lower() in ("opencode", "opencode.exe"):
-        local_app = os.environ.get("LOCALAPPDATA", "")
-        if local_app:
-            candidate = Path(local_app) / "Programs" / "ZeroScript" / "opencode.exe"
-            if candidate.is_file():
-                resolved = str(candidate)
-    resolved = resolved or argv[0]
+    resolved = resolve_cli_executable(argv)
+    if not resolved:
+        return False, (
+            f"no se encontro el ejecutable '{argv[0]}'; instala el CLI o pon la ruta "
+            "completa en 'command'"
+        )
     if os.name == "nt" and resolved.lower().endswith((".cmd", ".bat")):
         argv = ["cmd.exe", "/d", "/c", resolved, *argv[1:]]
     else:
@@ -941,16 +1067,18 @@ def watch_loop(
             if not config.get("enabled", True) or not watch.get("enabled", True):
                 stop_event.wait(5.0)
                 continue
-            cycle_targets = targets or watch.get("targets") or config.get("default_targets") or []
-            if isinstance(cycle_targets, str):
-                cycle_targets = [cycle_targets]
+            cycle_targets = resolve_targets(
+                config,
+                targets or watch.get("targets") or config.get("default_targets"),
+                active_only=True,
+            )
             wait = float(interval or watch.get("interval_seconds") or 2.5)
             raw_mailbox = mailbox or os.environ.get("ZS_PC_MAILBOX_DIR") or ""
             if not raw_mailbox:
                 raw_mailbox = read_json(HERE / "pc_agent_config.json", {}).get("mailbox_dir") or ""
             root = mailbox_store.resolve_mailbox_dir(raw_mailbox, base_dir=HERE)
             woke = False
-            for target in [str(t) for t in cycle_targets]:
+            for target in cycle_targets:
                 result = process_target(
                     root,
                     target,
@@ -963,8 +1091,6 @@ def watch_loop(
                 )
                 if result["status"] == "woke":
                     woke = True
-                    break
-                if result["status"] == "failed":
                     break
             if woke:
                 continue
@@ -1004,9 +1130,11 @@ def print_status(config: dict[str, Any], state: dict[str, Any], state_path: Path
             safe_print(f"  {key}  intentos={item.get('count')}  "
                        f"{str(item.get('detail') or '')[:100]}")
     watch = config.get("watch") or {}
-    watch_targets = watch.get("targets") or config.get("default_targets") or []
-    if isinstance(watch_targets, str):
-        watch_targets = [watch_targets]
+    watch_targets = resolve_targets(
+        config,
+        watch.get("targets") or config.get("default_targets"),
+        active_only=True,
+    )
     require_trigger, trigger_tokens = trigger_settings(config)
     if require_trigger:
         tokens = ", ".join(trigger_tokens) if trigger_tokens else "(sin token: nunca despierta)"
@@ -1015,14 +1143,24 @@ def print_status(config: dict[str, Any], state: dict[str, Any], state_path: Path
         safe_print("Disparador: desactivado (cualquier mensaje nuevo despierta)")
     safe_print(f"Mensajero: {'activo' if watch.get('enabled', True) else 'desactivado'} "
                f"cada {watch.get('interval_seconds', 2.5)} s"
-               + (f"; destinos: {', '.join(str(t) for t in watch_targets)}" if watch_targets else ""))
-    manual = [
-        str(name) for name, cfg in (config.get("targets") or {}).items()
-        if str((cfg or {}).get("method") or "").lower() == "none"
-    ]
-    if manual:
-        safe_print(f"Manual (sin despertar automatico): {', '.join(manual)}")
+               + (f"; destinos: {', '.join(watch_targets)}" if watch_targets else ""))
+    print_targets(config)
     safe_print("")
+
+
+def print_targets(config: dict[str, Any]) -> None:
+    targets = config.get("targets") or {}
+    if not targets:
+        safe_print("Destinos configurados: (ninguno)")
+        return
+    safe_print("Destinos configurados:")
+    for name, cfg in targets.items():
+        if not isinstance(cfg, dict):
+            continue
+        method = str(cfg.get("method") or "cli").strip().lower()
+        ok, desc = target_availability(cfg)
+        marker = "OK" if ok else "--"
+        safe_print(f"  [{marker}] {str(name):<14} metodo={method:<7} {desc}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1044,6 +1182,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state", default=str(DEFAULT_STATE_FILE), help="Archivo de estado.")
     parser.add_argument("--watch", action="store_true", help="Vigila el buzon en primer plano.")
     parser.add_argument("--status", action="store_true", help="Muestra el estado y el presupuesto.")
+    parser.add_argument("--list-targets", action="store_true",
+                        help="Lista los destinos configurados y si su CLI/ventana esta disponible.")
     parser.add_argument("--reset-failures", action="store_true",
                         help="Borra los fallos registrados (todos o los del destino indicado).")
     parser.add_argument("--quiet", action="store_true", help="No imprime avisos del buzon.")
@@ -1064,6 +1204,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.status:
         print_status(config, state, state_path)
+        return 0
+
+    if args.list_targets:
+        print_targets(config)
         return 0
 
     if args.reset_failures:
@@ -1114,9 +1258,9 @@ def main(argv: list[str] | None = None) -> int:
         max_age = args.max_age_hours
 
     if args.target:
-        targets = [str(t) for t in args.target]
+        targets = resolve_targets(config, [str(t) for t in args.target], active_only=False)
     else:
-        targets = [str(t) for t in (config.get("default_targets") or [])]
+        targets = resolve_targets(config, config.get("default_targets"), active_only=True)
 
     if not args.apply:
         safe_print("")

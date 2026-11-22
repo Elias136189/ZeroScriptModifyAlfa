@@ -3,8 +3,9 @@
 :: Lanzador del vigilante de cambios. Ejemplos:
 ::   vigilante_cambios.bat start      arranca en segundo plano
 ::   vigilante_cambios.bat stop       lo detiene
-::   vigilante_cambios.bat status     estado y ultimos eventos
-::   vigilante_cambios.bat ver 50     ultimas 50 lineas del registro
+::   vigilante_cambios.bat status      estado y ultimos eventos
+::   vigilante_cambios.bat ver 50      ultimas 50 lineas del registro
+::   vigilante_cambios.bat contexto 15 resumen compacto con diffs para IAs
 setlocal
 cd /d "%~dp0"
 set "PY="

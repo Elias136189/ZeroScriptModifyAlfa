@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "default_targets": [
-    "opencode"
+    "*"
   ],
   "min_seconds_between": 60,
   "max_per_hour": 6,
@@ -12,7 +12,12 @@
   "require_reply": true,
   "allowed_senders": [
     "zeroscript",
-    "usuario"
+    "usuario",
+    "opencode",
+    "antigravity",
+    "claude",
+    "claude-code",
+    "codex"
   ],
   "trigger": {
     "require": true,
@@ -25,28 +30,11 @@
     "enabled": true,
     "interval_seconds": 2.5,
     "targets": [
-      "opencode"
+      "*"
     ]
   },
   "prompt": "Lee el mensaje {id} de {from} en el buzon compartido. Responde una sola vez con msg_reply. Si msg_inbox responde 'Sin mensajes nuevos.', vuelve a leerlo con include_read=true: el aviso pudo marcarlo como leido. No envies mensajes nuevos. No uses pc_shell, pc_write ni despertar.py. Si ya respondiste o el mensaje es automatico, no hagas nada.",
   "targets": {
-    "claude": {
-      "method": "none",
-      "fallback": [],
-      "note": "Claude Desktop con cuenta gratis solo tiene chat: no hay CLI ni despertar automatico. Abre Claude y pide msg_inbox, o usa una instruccion personalizada para que revise el buzon.",
-      "process": [
-        "claude",
-        "Claude"
-      ],
-      "title": "Claude",
-      "command": [
-        "claude",
-        "-p",
-        "{prompt}"
-      ],
-      "cli_timeout_seconds": 240,
-      "window_reply_timeout_seconds": 90
-    },
     "opencode": {
       "method": "cli",
       "fallback": [],
@@ -65,6 +53,62 @@
         "{prompt}"
       ],
       "cli_timeout_seconds": 300
+    },
+    "antigravity": {
+      "method": "window",
+      "fallback": [],
+      "note": "Antigravity por ventana (no aplica perfil restringido). Si instalas el CLI 'agy', cambia method a 'cli'.",
+      "process": [
+        "Antigravity",
+        "antigravity"
+      ],
+      "title": "Antigravity",
+      "command": [
+        "agy",
+        "-p",
+        "{prompt}"
+      ],
+      "cli_timeout_seconds": 240,
+      "window_reply_timeout_seconds": 90
+    },
+    "claude-code": {
+      "method": "cli",
+      "fallback": [],
+      "note": "Preconfigurado para Claude Code CLI ('claude -p'). Funciona automaticamente al instalarlo en el PATH.",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}"
+      ],
+      "cli_timeout_seconds": 240
+    },
+    "codex": {
+      "method": "cli",
+      "fallback": [],
+      "note": "Preconfigurado para Codex CLI ('codex exec'). Funciona automaticamente al instalarlo en el PATH.",
+      "command": [
+        "codex",
+        "exec",
+        "{prompt}"
+      ],
+      "cli_timeout_seconds": 240
+    },
+    "claude": {
+      "method": "none",
+      "fallback": [],
+      "note": "Claude Desktop con cuenta gratis solo tiene chat: no hay CLI ni despertar automatico. Abre Claude y pide msg_inbox, o usa una instruccion personalizada para que revise el buzon.",
+      "process": [
+        "claude",
+        "Claude"
+      ],
+      "title": "Claude",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}"
+      ],
+      "cli_timeout_seconds": 240,
+      "window_reply_timeout_seconds": 90
     }
   }
 }
