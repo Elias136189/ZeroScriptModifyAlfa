@@ -1,9 +1,9 @@
 # ZeroScript Modify - Documentación del proyecto
 
-> Documento generado el 15-nov-2026 y actualizado el 18-nov-2026 leyendo el código y la configuración reales de la carpeta
+> Documento generado el 15-nov-2026 y actualizado el 21-nov-2026 leyendo el código y la configuración reales de la carpeta
 > `%USERPROFILE%\Documents\Monero\ZeroScriptModify`.
 > La carpeta se llamó antes `ZeroScript-Free-1.5.5 - copia`; las rutas antiguas que aparecen en
-> `INFORME_CODIGO_MCP.md`, `backups\` y `logs\` son históricas.
+> `backups\` y `logs\` son históricas.
 > Lo que aparece como "verificado" se comprobó ejecutando o leyendo el archivo; lo marcado como
 > "probable" es una deducción del código que no se ha probado.
 
@@ -19,8 +19,7 @@ Origen: proyecto de código abierto `sebattfg/ZeroScript-Free` (licencia GPL-3.0
 copia modificada: el nombre de la carpeta ya no lleva versión y el código corresponde a las versiones
 2.2.0-2.4.0 (ver sección 9).
 
-Dependencias: Python 3.9+, `websockets` (solo lo usa el bridge) y `watchdog` (solo el vigilante de
-cambios). Todo lo demás es biblioteca estándar. La extensión es JavaScript sin dependencias.
+Dependencias: Python 3.12.10 embebido en `runtime\python\` (lo descarga `start.bat` o `preparar_portable.bat` sin instalar nada en Windows), con `websockets` (bridge) y `watchdog` (vigilante de cambios). También funciona con Python 3.9+ del sistema. Todo lo demás es biblioteca estándar. La extensión es JavaScript sin dependencias.
 
 ## 2. Arquitectura
 
@@ -51,25 +50,24 @@ El bridge lanza su propio `pc_agent_mcp.py` con la identidad por defecto `zerosc
 
 | Ruta | Qué es |
 | --- | --- |
-| `start.bat` | Lanzador principal en Windows: busca Python, instala `websockets`, arranca el chat local y el bridge |
-| `bridge.py` (2245 líneas) | Puente WebSocket <-> servidores MCP; supervisa y reinicia los servidores |
-| `pc_agent_mcp.py` (1486 líneas) | Servidor MCP por stdio con las 12 herramientas (`pc_*` y `msg_*`) |
-| `pc_agent_mcp.cmd` | Lanzador de `pc_agent_mcp.py` para clientes MCP (busca `py -3` o `python`) |
-| `pc_agent_config.json` | Permisos y límites del agente (workspace, shell, buzón, límites) |
+| `start.bat` | Lanzador principal en Windows: usa `runtime\python\` embebido (con respaldo a Python del sistema), copia `*.example.json`, verifica puerto, arranca chat local, vigilante (`ensure`) y bridge oculto |
+| `preparar_portable.bat` / `.ps1` | Descarga Python 3.12.10 embebido y extrae los wheels SHA-256 de `websockets` y `watchdog` en `runtime\python\` |
+| `runtime\` | Python 3.12.10 portable y paquetes (`websockets`, `watchdog`); ignorado en `.gitignore` |
+| `bridge.py` (2333 líneas) | Puente WebSocket <-> servidores MCP; deriva el ID de `manifest.json`, valida `Origin` y token `ZS_BRIDGE_TOKEN` |
+| `pc_agent_mcp.py` (1577 líneas) | Servidor MCP por stdio con 12 herramientas (`pc_*` y `msg_*`), `allow_write` y rutas relativas |
+| `pc_agent_mcp.cmd` | Lanzador de `pc_agent_mcp.py` para clientes MCP (busca `runtime\python\`, `py -3` o `python`) |
+| `pc_agent_config.json` | Permisos y límites del agente (`workspace: "."`, `allow_shell`, `allow_write`, buzón) |
 | `config.json` | Servidores MCP que arranca el bridge (hoy solo `pc`) |
 | `mailbox_store.py` | Lógica común del buzón: validar, leer, escribir, marcar leído, archivar |
 | `despertar.py` / `despertar.bat` | Despertar a otra IA; el bridge lo vigila solo y la `.bat` es el atajo manual |
 | `despertar_config.json` | Destinos del despertar, presupuesto y prompt fijo |
 | `limpiar_buzon.py` | Archiva mensajes leídos con más de N días |
-| `chat-local\` | Página de chat: `server.py`, `chat.html`, `lanzar_chat.ps1`, `iniciar_chat.bat`, `detener_chat.bat`, `ocultar_ventana.ps1` (sin uso) |
-| `zeroscript-extension\` | Extensión de navegador (manifest v3), proveedores y pruebas en Node |
+| `chat-local\` | Página de chat: `server.py`, `chat.html`, `lanzar_chat.ps1`, `iniciar_chat.bat`, `detener_chat.bat` |
+| `zeroscript-extension\` | Extensión de navegador (manifest v3 con `"key"` RSA fija), proveedores y pruebas en Node |
 | `launch_studio_mcp.py` | Lanzador opcional para el MCP de Roblox Studio |
-| `vigilante_cambios.py` / `vigilante_cambios.bat` | Vigilante del sistema de archivos (necesita `watchdog`). **Detenido el 18-nov-2026 al renombrar la carpeta** (se cerraron todos los procesos del proyecto); se arranca con `vigilante_cambios.bat start` o desde el VBS de Inicio. Registra CREATED, MODIFIED, DELETED y MOVED de archivos y carpetas del proyecto en `logs\registro_cambios\cambios_AAAA-Wss.log` (un archivo por semana ISO; columnas: fecha, autor = usuario de Windows, evento, FILE/DIR y ruta relativa). Ignora `__pycache__`, `.git`, `logs`, `backups`, `assets` y `workspace_wake`. Comandos: `run`, `start`, `stop`, `status`, `ver [N]` |
-| `instalar_vigilante.bat` / `desinstalar_vigilante.bat` | La instalación crea `ZeroScript_Vigilante_Cambios.vbs` en la carpeta Inicio del usuario (sin admin; la tarea programada está bloqueada por política en este equipo) para arrancar el vigilante oculto con `pythonw.exe` al iniciar sesión, e instala `watchdog` si falta. `desinstalar_vigilante.bat` detiene el proceso, borra el VBS de Inicio y elimina la tarea programada si existiera (ambos leídos el 18-nov) |
-| `bridge_segundo_plano.vbs` | Lanza `bridge.py` oculto con doble clic (`py -3`, salida en `logs\bridge_stdout.log`), con `ZS_BRIDGE_EXTENSION_ID` fijado a la extensión instalada. No lanza otro si el puerto 17613 ya está en uso. Alternativa a `start.bat`: este no arranca el chat local |
-| `despertar.txt` | Copia de `despertar.py` (647 líneas, 24 KB) guardada con extensión `.txt`; no la usa ningún archivo |
-| `patch_claude1.py` | Parche antiguo ya aplicado (obsoleto, ver sección 10) |
-| `README.md`, `README-ALPHA.md`, `MCP_CLIENTS.md`, `CHANGELOG.md` | Documentación (el `README.txt` original se sustituyó por `README.md` en GitHub el 18-nov-2026; `INFORME_CODIGO_MCP.md` se eliminó del repositorio y queda solo como copia local ignorada) |
+| `vigilante_cambios.py` / `vigilante_cambios.bat` | Vigilante del sistema de archivos (necesita `watchdog`). Precarga `(mtime_ns, size)` al arrancar para ignorar lecturas y registra CREATED, MODIFIED, DELETED y MOVED en `logs\registro_cambios\cambios_AAAA-Wss.log`. Ignora `__pycache__`, `.git`, `logs`, `backups`, `assets`, `runtime` y `workspace_wake`. Comandos: `run`, `start`, `ensure`, `stop`, `status`, `ver [N]` |
+| `instalar_vigilante.bat` / `desinstalar_vigilante.bat` | La instalación crea `ZeroScript_Vigilante_Cambios.vbs` en la carpeta Inicio del usuario (sin admin; `ensure` lo hace automáticamente solo en PCs nuevas). `desinstalar_vigilante.bat` detiene el proceso, borra el VBS de Inicio y elimina la tarea programada si existiera |
+| `README-ALPHA.md`, `MCP_CLIENTS.md`, `CHANGELOG.md` | Documentación (el duplicado `README.md`, `INFORME_CODIGO_MCP.md`, `bridge_segundo_plano.vbs`, `despertar.txt`, `patch_claude1.py` y `ocultar_ventana.ps1` se retiraron a `backups\`) |
 | `assets\` | Icono y banner del README |
 | `backups\` | Copias hechas antes de cambios (archivos `.antes-*` y la carpeta `arreglos-20261114-212149`) |
 | `logs\` | `start.log`, `bridge_debug.log`, `despertar.log`, `pc_agent_mcp_*.log`, `vigilante_cambios.pid` y `registro_cambios\` (registros semanales del vigilante, con autor) |
@@ -85,9 +83,12 @@ El bridge lanza su propio `pc_agent_mcp.py` con la identidad por defecto `zerosc
   de la llamada fallida.
 - Mensajes que acepta de la extensión: `ping`, `list_tools`, `call_tool`, `studio_status`,
   `add_server`, `remove_server`, `restart_mcp`.
-- **Control de origen (verificado en `bridge.py:1442-1454`):** rechaza las conexiones sin cabecera `Origin` y solo acepta
-  los orígenes `chrome-extension://` / `moz-extension://`. `start.bat` fija `ZS_BRIDGE_EXTENSION_ID` a la extensión instalada, así que en la práctica solo entra esa. No hay token compartido. Se puede fijar una sola extensión con
-  `ZS_BRIDGE_EXTENSION_ID` o añadir orígenes con `ZS_BRIDGE_ALLOWED_ORIGINS`.
+- **Control de origen y token (`bridge.py`):** rechaza las conexiones sin cabecera `Origin` y solo acepta
+  los orígenes `chrome-extension://` / `moz-extension://`. Si `ZS_BRIDGE_EXTENSION_ID` no está definida,
+  `bridge.py` deriva el ID automáticamente del campo `"key"` de `zeroscript-extension\manifest.json`
+  (`kmjgngkgeagldpddkklmdmllbkdopldb`, igual en cualquier carpeta o PC). Además soporta el token
+  compartido opcional `ZS_BRIDGE_TOKEN` (validado con `hmac.compare_digest` vía `?token=`, `Bearer` o
+  `X-ZS-Token`) y orígenes adicionales con `ZS_BRIDGE_ALLOWED_ORIGINS`.
 - Mucho código es diagnóstico de Roblox Studio (puertos, procesos huérfanos). No se usa mientras
   `roblox` no esté en `config.json`.
 - Registro en `logs\bridge_debug.log` (se añade siempre, nunca se trunca).
@@ -221,11 +222,14 @@ sección 8 para el detalle.
 
 ### 4.6 `start.bat`
 
-Pasos: (1) busca Python (`py -3`, luego `python`, luego carpetas estándar; rechaza el stub de la
-Microsoft Store y versiones menores de 3.9; si no hay, intenta `winget`); (2) instala `websockets`
-si falta; (3) libera el puerto 17613 si está ocupado (mata el PID que escucha y sus hijos con
-`taskkill /T`, sin comprobar que sea `bridge.py`), arranca el chat local, comprueba `despertar`
-(archivos) y lanza `bridge.py` con `pythonw.exe`.
+Pasos: (1) prepara `workspace_wake\` y copia `*.example.json` si faltan las configuraciones locales;
+(2) comprueba el Python embebido en `runtime\python\` (si falta, llama a `preparar_portable.ps1`) y
+verifica si puede escribir en `logs\` (si Windows Defender CFA lo bloquea dentro de `Documentos`, cae
+automáticamente a Python 3.9+ del sistema como respaldo); (3) comprueba `websockets`; (4) si el puerto
+del bridge (`ZS_BRIDGE_PORT`, 17613) está ocupado, verifica por línea de comandos que pertenezca a
+`bridge.py` antes de cerrarlo; (5) arranca el chat local, muestra el estado del mensajero, ejecuta
+`vigilante_cambios.py ensure` (instala y arranca el vigilante solo si detecta una PC nueva) y lanza
+`bridge.py` oculto con `pythonw.exe` (o en consola con `/consola`). Acepta también `/nochat` y `/nopause`.
 
 `pythonw.exe` es un binario de subsistema GUI: **no tiene consola**, así que el bridge, el PC agent
 y el mensajero corren sin ninguna ventana y sobreviven al cierre de la ventana de `start.bat`. El
@@ -271,13 +275,14 @@ mensaje firmado como `usuario`.
 
 ## 6. Configuración
 
-`pc_agent_config.json` (valores actuales, verificados leyendo el archivo; **endurecidos**, ya no son los valores por defecto del proyecto original):
+`pc_agent_config.json` (y su plantilla `pc_agent_config.example.json`, con rutas relativas para funcionar en cualquier PC):
 
 | Clave | Valor | Significado |
 | --- | --- | --- |
-| `workspace` | `%USERPROFILE%\Documents\Monero\ZeroScriptModify` | Raíz de las rutas relativas |
+| `workspace` | `.` (carpeta del proyecto) | Raíz de las rutas relativas |
 | `allow_outside_workspace` | `false` | No permite rutas fuera del workspace |
-| `allow_shell` | `false` | `pc_shell` está desactivado en este perfil |
+| `allow_shell` | `true` (en `.example.json`: `false`) | Activa/desactiva `pc_shell` |
+| `allow_write` | `true` (en `.restricted`: `false`) | Activa/desactiva `pc_write` y `pc_edit` |
 | `shell_timeout_ms` | 120000 | Tiempo por defecto de un comando |
 | `max_read_bytes` | 2000000 | Tamaño máximo que lee `pc_read` |
 | `max_output_chars` | 40000 | Salida máxima de una herramienta |
@@ -288,8 +293,9 @@ mensaje firmado como `usuario`.
 | `skip_dirs` | `.git`, `node_modules`, `bin`, `env`... | Carpetas que se saltan `pc_glob` y `pc_grep` |
 
 `pc_agent_config.restricted.json` es el perfil que usa el despertar para el CLI: mismas claves y
-límites, pero el workspace es `...\workspace_wake`; `allow_shell` y `allow_outside_workspace` siguen
-en `false`.
+límites, pero el workspace es `workspace_wake`; `allow_shell`, `allow_write` y
+`allow_outside_workspace` están en `false`. Si falta cualquier `.json` local, `pc_agent_mcp.py`,
+`despertar.py` y `chat-local\server.py` hacen fallback automático a su `*.example.json`.
 
 `despertar_config.json`: `enabled`, `default_targets`, `min_seconds_between` 60, `max_per_hour` 6,
 `max_per_day` 20, `max_age_hours` 24, `max_attempts` 5, `retry_base_seconds` 30, `require_reply`,
@@ -298,9 +304,10 @@ destino `method`, `fallback`, `process`, `title`, `command` y `cli_timeout_secon
 y 300 para OpenCode).
 
 Variables de entorno: `ZS_PC_CONFIG`, `ZS_PC_WORKSPACE`, `ZS_PC_ALLOW_OUTSIDE_WORKSPACE`,
-`ZS_PC_ALLOW_SHELL`, `ZS_PC_SHELL_TIMEOUT_MS`, `ZS_PC_AGENT_NAME`, `ZS_PC_MAILBOX_DIR`,
-`ZS_BRIDGE_PORT`, `ZS_BRIDGE_EXTENSION_ID`, `ZS_BRIDGE_ALLOWED_ORIGINS`,
-`ZS_BRIDGE_ALLOW_ANY_ORIGIN`, `CHAT_LOCAL_PORT`, `CHAT_LOCAL_SCAN_SECONDS`, `ZS_STUDIO_MCP_PATH`.
+`ZS_PC_ALLOW_SHELL`, `ZS_PC_ALLOW_WRITE`, `ZS_PC_SHELL_TIMEOUT_MS`, `ZS_PC_AGENT_NAME`,
+`ZS_PC_MAILBOX_DIR`, `ZS_BRIDGE_PORT`, `ZS_BRIDGE_EXTENSION_ID`, `ZS_BRIDGE_TOKEN`,
+`ZS_BRIDGE_ALLOWED_ORIGINS`, `ZS_BRIDGE_ALLOW_ANY_ORIGIN`, `ZS_VIGILANTE_STARTUP_DIR`,
+`CHAT_LOCAL_PORT`, `CHAT_LOCAL_SCAN_SECONDS`, `ZS_STUDIO_MCP_PATH`.
 
 Puertos: 17613 (bridge, WebSocket) y 8765 (chat local, HTTP). Ambos solo en 127.0.0.1.
 
@@ -322,7 +329,22 @@ py -3 limpiar_buzon.py --apply              REM archiva leídos de más de 30 d�
 type nul > wake_off                         REM apaga el despertar al instante
 ```
 
-## 8. Estado de esta instalación (actualizado el 18-nov-2026)
+## 8. Estado de esta instalación (actualizado el 21-nov-2026)
+
+- **Portabilidad y arranque embebido (19–21 nov 2026):** `runtime\python\` incluye Python **3.12.10**
+  portable con `websockets 17.4` y `watchdog 7.1.0` (`preparar_portable.bat`/`.ps1`). `start.bat` lo
+  usa por defecto (y cae al Python del sistema si Defender CFA bloquea `Documentos`). Todas las
+  configuraciones usan rutas relativas (`"."` y `"workspace_wake"`), y `manifest.json` fija el ID
+  `kmjgngkgeagldpddkklmdmllbkdopldb` mediante `"key"` RSA (falta recargar una vez en Chrome para
+  dejar el ID anterior `jgigjkahlhhfcmbnlbmbbcdpeljdkidp`).
+- **Vigilante de cambios activo:** `vigilante_cambios.py` corriendo (`pythonw.exe`, PID `10356`) sin
+  falsos positivos al leer archivos y con auto-instalación automática en PCs nuevas (`ensure`).
+- **`wake_off` activo:** el despertar automático está frenado temporalmente hasta validar el agente
+  `wake` de OpenCode con un modelo con cuota disponible.
+- **Pruebas:** `comprobar_proyecto.py` pasa con 0 problemas y 0 avisos; `pc_agent_mcp.py --check`
+  pasa en perfil normal y restringido (`allow_write: false`); pruebas JS de la extensión 45/45.
+
+**Registro histórico de pruebas previas (15–18 nov 2026):**
 
 - **Renombrado el 18-nov-2026:** la carpeta pasó a `ZeroScriptModify`. La configuración del agente,
   los clientes MCP (OpenCode, Claude Desktop, Antigravity), el VBS de Inicio y los dos lanzadores ya
@@ -378,7 +400,7 @@ limpieza o detalle.
 | --- | --- | --- | --- | --- |
 | 1 | Baja | `pc_agent_mcp.py:937-940` | **Resuelto (verificado con pc_grep).** El `Popen` de `pc_shell` ya lleva `stdin=subprocess.DEVNULL`, así que el hijo no hereda el canal JSON-RPC. | — |
 | 2 | Baja | `zeroscript-extension\manifest.json` | **Resuelto (verificado leyendo el manifest).** El manifest actual carga los 8 proveedores, de modo que coincide con lo que anuncian README, `popup.js`, `background.js` y `main.js`. | — |
-| 3 | Media | `bridge.py` (`_origin_allowed`) | **Parcialmente resuelto (verificado en `bridge.py:1442-1454` y `start.bat:10`).** Las conexiones sin cabecera `Origin` se rechazan y `start.bat` fija `ZS_BRIDGE_EXTENSION_ID=jgigjkahlhhfcmbnlbmbbcdpeljdkidp` si la variable no está definida, así que solo se acepta esa extensión. Pendiente: no hay token compartido. La comprobación de `Origin` protege contra páginas web y otras extensiones, pero un proceso local que no sea un navegador puede escribir la cabecera `Origin` que quiera y llegar a `pc_shell` por el WebSocket. Tampoco he comprobado que el bridge en ejecución se lanzara con esa variable (solo la leí en `start.bat`) | Añadir un token compartido entre extensión y bridge; comprobar en `logs\bridge_debug.log` el origen de las conexiones aceptadas |
+| 3 | Media | `bridge.py` (`_origin_allowed`, `_check_token`) | **Parcialmente resuelto (19-nov-2026).** El ID de extensión se deriva automáticamente de `"key"` en `manifest.json` y se añadió soporte para token compartido `ZS_BRIDGE_TOKEN` (`hmac.compare_digest` + `chrome.storage.local` en `background.js`). Pendiente: activar el token por defecto y añadir campo para configurarlo en el popup | Añadir UI del token en `popup.html`/`popup.js` |
 | 4 | Media | Diseño del despertar | **Mayormente resuelto (verificado en `despertar.py:614-619` y `despertar_config.json`).** Antes de lanzar el CLI, `despertar.py` fuerza `ZS_PC_CONFIG=pc_agent_config.restricted.json` (`allow_shell: false`, `allow_outside_workspace: false`, workspace `workspace_wake`) y falla en cerrado si el perfil no existe. `allowed_senders` limita quién dispara y el token `@despertar` es obligatorio. Pendiente: (a) el método `window` no aplica el perfil restringido, así que no debe añadirse a ningún `fallback` mientras Claude Desktop use su propia configuración; hoy ningún destino lo usa. (b) No he comprobado que el hijo MCP de `opencode run --agent wake` herede `ZS_PC_CONFIG` ni qué permisos tiene el agente `wake` | Probar con un despertar real que `pc_shell` sea rechazado en el CLI; mantener `fallback: []` |
 | 5 | Media | `bridge.py` (`restart_self`, líneas 770-803) | El código intenta `os.execv` y, si falla, abre una copia nueva con `subprocess.Popen`, la deja sin ventana y termina la instancia anterior con `os._exit(0)`. **Pendiente de prueba real en Windows:** no he ejecutado un `add_server`/`remove_server` para comprobar que el bridge nuevo conserva el puerto y que no queda una instancia duplicada. Desde el 17-nov `start.bat` lanza el bridge oculto y ya no lee su salida ni detiene el chat local, así que ese punto ya no aplica | Probar el ciclo completo de reinicio en Windows y revisar `logs\bridge_debug.log` |
 | 6 | Media | `pc_agent_mcp.py` (`msg_wait`) | Cada 0,5 s relee y analiza todos los JSON del buzón, hasta 55 s. El coste crece con el número de mensajes. Además el servidor es de un solo hilo: un `msg_wait` o un `pc_shell` largo bloquean cualquier otra llamada de ese proceso | Comparar solo nombres y fechas con `os.scandir` y analizar solo lo nuevo; servir llamadas en hilos |
@@ -386,7 +408,7 @@ limpieza o detalle.
 | 8 | Media | Todos los `.bat` / `.cmd` | **Resuelto el 18-nov-2026 (verificado: 0 LF sueltos en los 8 `.bat`/`.cmd`; `.gitattributes` fija `eol=crlf` y `comprobar_proyecto.py` lo vigila).** Antes (parcial): `start.bat` y `despertar.bat` ya estaban en CRLF (0 LF). Siguen en LF `chat-local\iniciar_chat.bat`, `chat-local\detener_chat.bat`, `instalar_vigilante.bat`, `desinstalar_vigilante.bat`, `vigilante_cambios.bat` y `pc_agent_mcp.cmd`. En `cmd.exe`, un `.bat` en LF puede fallar con `goto` o `call :etiqueta` según el desplazamiento de bytes; fue la causa del `pause` fantasma y del `No se esperaba .` en `start.bat` | Convertir los 6 restantes a CRLF y añadir a `.gitattributes`: `*.bat text eol=crlf` y `*.cmd text eol=crlf` |
 | 9 | Baja | `despertar.bat` | **Resuelto el 15-nov-2026.** Sin comando termina con error y `/claude` aplica de verdad. `MCP_CLIENTS.md`, `README.txt` y `CHANGELOG.md` ya lo describen como atajo manual. | — |
 | 10 | Baja | `despertar.py` | **Resuelto el 15-nov-2026.** (a) Los fallos se registran con backoff 30/60/120/240/300 s y `max_attempts: 5`; el mensaje nunca se marca leído ni procesado. (b) Cualquier destino fallido fuerza código de salida 1. (c) `processed` y `failures` usan el destino en minúsculas. (d) `0` desactiva el presupuesto. (e) El método por defecto es `cli`; `window` queda como fallback opcional. `require_reply` trata un CLI que sale con 0 sin responder como fallo. | — |
-| 11 | Media | `start.bat` (líneas 217-243) | Mata con `taskkill /F /T` cualquier proceso que escuche en el puerto 17613 (y sus hijos), sin comprobar que sea `bridge.py` (confirmado leyendo el bloque actual). Si otro programa usa ese puerto, puede cerrarse o quedar en conflicto. | Consultar la línea de comandos del PID con PowerShell/WMI y finalizarlo solo si corresponde a `bridge.py` |
+| 11 | Baja | `start.bat` | **Resuelto el 21-nov-2026.** Antes de cerrar un proceso en el puerto del bridge (`ZS_BRIDGE_PORT`), comprueba por línea de comandos que sea `bridge.py`; si pertenece a otro programa, avisa y no lo cierra. | — |
 | 12 | Baja | Versiones | Carpeta `ZeroScriptModify` (antes "1.5.5 - copia"), bridge y extensión 2.2.0, `pc_agent_mcp.py` 2.3.0, chat local 2.4.0. El CHANGELOG ya tiene 2.4.0 y una entrada `Unreleased`, y `MCP_CLIENTS.md` documenta `despertar.bat`; README.txt sigue sin sección 2.4.0 y la opción `todos` no aparece en la documentación | Unificar el número y añadir la sección 2.4.0 al README |
 | 13 | Baja | Python 3.15.0rc3 | Es una versión candidata, no la final | Usar la última estable |
 | 14 | Baja | README y `MCP_CLIENTS.md` (líneas 118 y 480-481) | Dicen que la página no marca nada como leído; `server.py:383-386` sí marca el original como leído si llega `reply_to`. La página actual no envía `reply_to`, así que hoy no ocurre | Corregir el texto o quitar el marcado |
@@ -397,9 +419,10 @@ limpieza o detalle.
 
 ### 9.2 Limpieza y organización
 
-- `patch_claude1.py` (331 líneas) es un parche ya aplicado: sus cambios están dentro de `bridge.py`
-  y `pc_agent_mcp.py` y no volvería a coincidir. Moverlo a `backups\` o borrarlo.
-- `chat-local\ocultar_ventana.ps1` no lo referencia ningún archivo.
+- `patch_claude1.py` y `despertar.txt` se eliminaron en git el 19-nov-2026 (hay copia en `backups\`).
+- `INFORME_CODIGO_MCP.md`, el duplicado `README.md`, `bridge_segundo_plano.vbs`,
+  `chat-local\ocultar_ventana.ps1` y el PID huérfano `chat-8765.pid` se retiraron el 21-nov-2026
+  (respaldados en `backups\limpieza-20261121\`).
 - `_safe_filename_part` (sin usos; la lógica está en `mailbox_store.py`) se eliminó de `pc_agent_mcp.py` el 18-nov-2026.
 - `backups\` ya está en `.gitignore` y contiene una copia de `claude_desktop_config.json`
   (configuración personal de Claude Desktop, 17 KB); no viaja al repositorio.

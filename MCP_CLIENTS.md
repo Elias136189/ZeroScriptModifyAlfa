@@ -10,8 +10,9 @@ The bridge does **not** need to be running for these clients. They start
 the bridge's server list. Use the configuration snippet generated below in the
 client's own settings file.
 
-Requirements: **Python 3.9 or newer**. The server only uses the standard
-library, so there is nothing to `pip install`.
+Requirements: **Python 3.9 or newer** (or the bundled portable runtime in
+`runtime\python\python.exe`, created by `start.bat` / `preparar_portable.bat`).
+The server only uses the standard library, so there is nothing to `pip install`.
 
 > **Security:** standalone clients bypass the browser confirmation that
 > ZeroScript shows for `pc_write`, `pc_edit` and `pc_shell`. Your client's own
@@ -24,28 +25,30 @@ Open a terminal in the ZeroScript folder:
 
 ```bat
 cd "C:\path\to\ZeroScriptModify"
-py -3 pc_agent_mcp.py --version
-py -3 pc_agent_mcp.py --check
+pc_agent_mcp.cmd --version
+pc_agent_mcp.cmd --check
 ```
 
-`--check` prints the agent identity, mailbox path, workspace, permissions,
-limits, tool list and protocol versions. It exits with code 0 when everything
-is usable.
+`pc_agent_mcp.cmd` automatically uses `runtime\python\python.exe` if present
+and writable, or falls back to `py -3` / `python`. `--check` prints the agent
+identity, mailbox path, workspace, permissions, limits, tool list and protocol
+versions. It exits with code 0 when everything is usable.
 
 Generate the exact configuration for your client instead of copying paths by
 hand:
 
 ```bat
-py -3 pc_agent_mcp.py --print-config            REM generic mcpServers (Claude, Antigravity, most clients)
-py -3 pc_agent_mcp.py --print-config claude     REM same shape, for Claude Desktop
-py -3 pc_agent_mcp.py --print-config antigravity
-py -3 pc_agent_mcp.py --print-config opencode   REM OpenCode V2 mcp.servers
+pc_agent_mcp.cmd --print-config            REM generic mcpServers (Claude, Antigravity, most clients)
+pc_agent_mcp.cmd --print-config claude     REM same shape, for Claude Desktop
+pc_agent_mcp.cmd --print-config antigravity
+pc_agent_mcp.cmd --print-config opencode   REM OpenCode V2 mcp.servers
 ```
 
-The generated JSON uses the absolute path of the Python interpreter that ran
-the command and the absolute path of `pc_agent_mcp.py`. Regenerate it if you
-move the folder. On Windows you can also use `pc_agent_mcp.cmd` as the command;
-it finds `py -3` or `python` automatically.
+The generated JSON uses `runtime\python\python.exe` when available (otherwise
+the Python interpreter that ran the command) and the absolute path of
+`pc_agent_mcp.py`. Regenerate it if you move the folder. On Windows you can also
+use `pc_agent_mcp.cmd` as the command; it finds portable Python, `py -3`, or
+`python` automatically.
 
 ### What the server exposes
 
@@ -510,14 +513,16 @@ stay confined to `mailbox_dir` and reject absolute paths and `..`.
 
 ## Safety and configuration
 
-`pc_agent_config.json` next to `pc_agent_mcp.py` controls the server:
+`pc_agent_config.json` next to `pc_agent_mcp.py` controls the server (if missing,
+it falls back to `pc_agent_config.example.json`):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `workspace` | `""` = user home | Root for relative paths |
+| `workspace` | `"."` = project folder | Root for relative paths (relative values resolve against the script folder) |
 | `mailbox_dir` | `~/Documents/AI-Shared/mailbox` | Shared folder for AI-to-AI messages; relative values resolve against the script folder |
-| `allow_outside_workspace` | `true` | Allow absolute paths outside the workspace |
-| `allow_shell` | `true` | Allow `pc_shell` |
+| `allow_outside_workspace` | `false` | Allow absolute paths outside the workspace |
+| `allow_shell` | `false` | Allow `pc_shell` |
+| `allow_write` | `true` | Allow `pc_write` and `pc_edit` (set `false` for read-only mode) |
 | `shell_timeout_ms` | `120000` | Default command timeout; calls may request up to 600000 |
 | `max_read_bytes` | `2000000` | Largest file `pc_read` accepts |
 | `max_output_chars` | `40000` | Tool output is truncated at this length |
@@ -536,6 +541,7 @@ Environment variables override the JSON file:
 | `ZS_PC_WORKSPACE` | `workspace` |
 | `ZS_PC_ALLOW_OUTSIDE_WORKSPACE` | `allow_outside_workspace` (`1/true/yes/on` or `0/false/no/off`) |
 | `ZS_PC_ALLOW_SHELL` | `allow_shell` |
+| `ZS_PC_ALLOW_WRITE` | `allow_write` |
 | `ZS_PC_SHELL_TIMEOUT_MS` | `shell_timeout_ms` |
 | `ZS_PC_AGENT_NAME` | Mailbox identity (default `zeroscript`) |
 | `ZS_PC_MAILBOX_DIR` | `mailbox_dir` (absolute, or relative to the script folder) |

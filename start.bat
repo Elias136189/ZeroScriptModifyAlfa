@@ -208,6 +208,7 @@ if "%OPT_CONSOLE%"=="0" if defined PYW_EXE (
 
 if "%OPT_NOCHAT%"=="0" call :start_chat
 call :check_despertar
+call :ensure_vigilante
 
 if "%OPT_CONSOLE%"=="1" goto :launch_console
 if not defined PYW_EXE goto :launch_console
@@ -344,4 +345,28 @@ echo           solo despierta si el mensaje lleva @despertar o [despertar]
 echo           ^(agrega /simular para probar sin activar; crea wake_off para apagarlo^)
 if exist "%ROOT%wake_off" echo         AVISO: existe wake_off, el mensajero esta apagado.
 call :log "Despertar: OpenCode automatic; Claude manual; token @despertar."
+exit /b 0
+
+:ensure_vigilante
+if not exist "%ROOT%vigilante_cambios.py" (
+    call :log "Vigilante: vigilante_cambios.py not found."
+    exit /b 0
+)
+set "VIG_STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\ZeroScript_Vigilante_Cambios.vbs"
+if defined ZS_VIGILANTE_STARTUP_DIR set "VIG_STARTUP=%ZS_VIGILANTE_STARTUP_DIR%\ZeroScript_Vigilante_Cambios.vbs"
+if exist "!VIG_STARTUP!" (
+    echo         Vigilante: PC ya tiene el vigilante instalado ^(no se reinstala^).
+    call :log "Vigilante: already installed on this PC (!VIG_STARTUP!); skipping auto-install."
+    exit /b 0
+)
+echo         Vigilante: nueva PC detectada; instalando en Inicio y arrancando...
+call :log "Vigilante: new PC detected; installing Startup VBS and starting watcher."
+"!PY_EXE!" -c "import watchdog" >nul 2>nul
+if errorlevel 1 (
+    if /i not "%PY_MODE%"=="embebido" (
+        "!PY_EXE!" -m pip install --user --quiet watchdog >nul 2>nul
+    )
+)
+"!PY_EXE!" "%ROOT%vigilante_cambios.py" ensure
+call :log "Vigilante: ensure finished with exit !errorlevel!."
 exit /b 0

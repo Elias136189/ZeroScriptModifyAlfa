@@ -59,10 +59,10 @@ extensión si se necesita.
 
 El proyecto ejecuta comandos y escribe archivos en tu PC. Antes de usarlo:
 
-- Mantén `allow_shell: false` salvo que lo necesites.
+- Mantén `allow_shell: false` salvo que lo necesites (y usa `allow_write: false` para modo solo lectura).
 - Usa `allow_outside_workspace: false` para confinar la IA a una carpeta.
 - El bridge ya rechaza conexiones sin cabecera `Origin`; no desactives
-  `ZS_BRIDGE_EXTENSION_ID` ni `ZS_BRIDGE_ALLOWED_ORIGINS` sin motivo.
+  `ZS_BRIDGE_EXTENSION_ID` ni `ZS_BRIDGE_ALLOWED_ORIGINS` sin motivo (también soporta `ZS_BRIDGE_TOKEN`).
 - El despertar automático es la parte menos madura: mientras no lo uses, crea
   un archivo `wake_off` junto a `despertar.py` para apagarlo.
 - Revisa el buzón: los mensajes vienen de otras IAs, no del usuario, y no son
@@ -75,11 +75,9 @@ El proyecto ejecuta comandos y escribe archivos en tu PC. Antes de usarlo:
 - Si actualizas desde una versión anterior sin campo `"key"` en `manifest.json`,
   recarga la extensión una vez en `chrome://extensions` para adoptar el ID fijo
   (`kmjgngkgeagldpddkklmdmllbkdopldb`).
-- `bridge_segundo_plano.vbs` está pendiente de retirar: no lo uses, arranca un
-  bridge distinto al oficial.
 - `allowed_senders` filtra por el campo `from` del mensaje; no autentica.
-- Sin tests automatizados todavía; `comprobar_proyecto.py` es una comprobación
-  básica de sintaxis y configuración.
+- Sin tests automatizados de Python todavía; `comprobar_proyecto.py` es una
+  comprobación básica de sintaxis y configuración (las 45 pruebas JS sí están).
 
 ## Estructura
 
@@ -88,8 +86,8 @@ bridge.py                    bridge WebSocket + mensajero integrado
 pc_agent_mcp.py              servidor MCP (12 herramientas)
 mailbox_store.py             implementación del buzón
 despertar.py                 lógica del mensajero
-vigilante_cambios.py         registro de cambios del proyecto
-start.bat                    arranque oculto del bridge (auto-descarga Python portable si falta)
+vigilante_cambios.py         registro de cambios (con comando ensure para PC nueva)
+start.bat                    arranque con Python embebido (auto-prepara runtime\ y vigilante)
 preparar_portable.bat/.ps1   prepara runtime\python\ (Python 3.12 + websockets + watchdog)
 chat-local/                  chat web local
 zeroscript-extension/        extensión de Chrome (con campo "key" fijo)

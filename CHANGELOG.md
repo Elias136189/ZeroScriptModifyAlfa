@@ -4,6 +4,44 @@ All notable changes to ZeroScript Free are documented here.
 
 ## [Unreleased]
 
+### Added — portabilidad, solo lectura y arranque embebido (19–21 nov 2026)
+- **Python embebido portable (`runtime\python\`).** Nuevos scripts
+  `preparar_portable.ps1` y `preparar_portable.bat` que descargan Python 3.12.10
+  oficial e instalan los wheels de `websockets` (17.4) y `watchdog` (7.1.0)
+  verificados por SHA-256 sin tocar el sistema ni pedir administrador. Todos los
+  lanzadores (`.bat`/`.cmd`) priorizan `runtime\python\python.exe` si puede
+  escribir en la carpeta, con respaldo automático a Python del sistema si
+  Windows Defender (Acceso controlado a carpetas) bloquea `Documentos`.
+- **`start.bat` reescrito para Python embebido.** Auto-prepara `runtime\python\`
+  y las configuraciones locales desde `*.example.json`, verifica que el proceso
+  en el puerto del bridge sea realmente `bridge.py` antes de cerrarlo, respeta
+  `ZS_BRIDGE_PORT`/`CHAT_LOCAL_PORT`, añade opciones `/consola`, `/nochat` y
+  `/nopause`, e instala/arranca el vigilante automáticamente en PCs nuevas.
+- **ID de extensión permanente (`key` RSA en `manifest.json`).** Fija el ID
+  `kmjgngkgeagldpddkklmdmllbkdopldb` en cualquier carpeta o PC; `bridge.py` lo
+  deriva automáticamente de `manifest.json`.
+- **Modo solo lectura real (`allow_write` / `ZS_PC_ALLOW_WRITE`).** Añadido en
+  `pc_agent_mcp.py`, `pc_agent_config.restricted.example.json` y
+  `despertar.py`, reportado en `--check`, `pc_system_info` e instrucciones.
+- **Token compartido opcional (`ZS_BRIDGE_TOKEN`).** Validación con
+  `hmac.compare_digest` en `bridge.py` y soporte en `zeroscript-extension\background.js`
+  usando `chrome.storage.local` y bloqueo `connectingPromise`.
+- **Vigilante de cambios (`vigilante_cambios.py`):**
+  - Precarga `(st_mtime_ns, st_size)` en `_prime_state()` y valida cambios reales
+    antes del debounce para eliminar falsos `MODIFIED` al leer archivos sin perder
+    la primera edición (incluyendo tras crear o mover). Ignora `runtime/`.
+  - Nuevo subcomando `ensure`: detecta si el equipo es nuevo (sin lanzador en
+    Inicio de Windows), instala el `.vbs` y arranca; si ya existe, no reinstala.
+- **Rutas relativas en toda la configuración.** `pc_agent_mcp.py`, `despertar.py`
+  y `chat-local\server.py` resuelven rutas relativas contra la carpeta del
+  proyecto (`"."` y `"workspace_wake"`) y hacen fallback a `*.example.json`.
+
+### Removed — limpieza (21 nov 2026)
+- Retirados en git (19-nov): `MacOS_Start.command`, `despertar.txt` y `patch_claude1.py`.
+- Retirados y respaldados en `backups\limpieza-20261121\`: `INFORME_CODIGO_MCP.md`
+  (histórico), el duplicado `README.md`, `bridge_segundo_plano.vbs`,
+  `chat-local\ocultar_ventana.ps1` y el PID huérfano `chat-local\chat-8765.pid`.
+
 ### Fixed — evaluación y arreglo (18-nov-2026)
 - **Extensión restaurada a la versión del agente de PC (2.2.0).** Ocho archivos de
   `zeroscript-extension` (`manifest.json`, `popup.html`, `popup.js`, `background.js`,

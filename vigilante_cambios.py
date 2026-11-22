@@ -6,6 +6,7 @@ Vigilante de cambios en el sistema de archivos.
 Uso:
   python vigilante_cambios.py run        Corre en primer plano (tarea programada)
   python vigilante_cambios.py start      Arranca en segundo plano (sin ventana)
+  python vigilante_cambios.py ensure     Si es nueva PC (no esta en Inicio), lo instala y arranca
   python vigilante_cambios.py stop       Detiene la instancia en segundo plano
   python vigilante_cambios.py status     Estado y ruta del log actual
   python vigilante_cambios.py ver [N]    Ultimas N lineas del log de esta semana
@@ -238,6 +239,52 @@ def _pythonw() -> str:
     return str(candidate) if candidate.exists() else sys.executable
 
 
+STARTUP_VBS_NAME = "ZeroScript_Vigilante_Cambios.vbs"
+
+
+def _startup_vbs_path() -> Path | None:
+    override = os.environ.get("ZS_VIGILANTE_STARTUP_DIR", "").strip()
+    if override:
+        return Path(override) / STARTUP_VBS_NAME
+    if os.name != "nt":
+        return None
+    appdata = os.environ.get("APPDATA", "").strip()
+    if not appdata:
+        return None
+    return (
+        Path(appdata)
+        / "Microsoft"
+        / "Windows"
+        / "Start Menu"
+        / "Programs"
+        / "Startup"
+        / STARTUP_VBS_NAME
+    )
+
+
+def cmd_ensure() -> int:
+    """Si es una PC nueva (sin lanzador en Inicio), lo instala y lo arranca.
+    Si la PC ya lo tiene instalado en Inicio, no reinstala ni modifica nada."""
+    vbs = _startup_vbs_path()
+    if vbs is not None and vbs.exists():
+        print(f"[vigilante] PC ya cuenta con el vigilante instalado ({vbs.name}); no se reinstala.")
+        return 0
+    if vbs is not None:
+        try:
+            vbs.parent.mkdir(parents=True, exist_ok=True)
+            pyw = _pythonw()
+            script = str(Path(__file__).resolve())
+            content = (
+                'Set sh = CreateObject("WScript.Shell")\r\n'
+                f'sh.Run """{pyw}"" ""{script}"" run", 0, False\r\n'
+            )
+            vbs.write_text(content, encoding="utf-8")
+            print(f"[vigilante] Nueva PC detectada: autoarranque instalado en {vbs}")
+        except Exception as exc:
+            print(f"[vigilante] Aviso: no se pudo registrar en Inicio: {exc}", file=sys.stderr)
+    return cmd_start()
+
+
 def cmd_start() -> int:
     pid = _read_pid()
     if pid and _pid_alive(pid):
@@ -335,6 +382,8 @@ def main(argv: list[str]) -> int:
         return run_foreground()
     if cmd == "start":
         return cmd_start()
+    if cmd == "ensure":
+        return cmd_ensure()
     if cmd == "stop":
         return cmd_stop()
     if cmd == "status":
