@@ -1,7 +1,6 @@
-# Shell launchers MUST keep LF endings: a CRLF checkout makes bash fail on
-# macOS/Linux with "$'\r': command not found". The repo is developed on
+# POSIX shell scripts MUST keep LF endings: a CRLF checkout makes bash fail with
+# "$'\r': command not found". The repo is developed on
 # Windows (autocrlf), so pin these explicitly.
-*.command text eol=lf
 *.sh       text eol=lf
 # Windows batch files MUST keep CRLF: cmd.exe mis-parses goto/call labels in LF files.
 *.bat     text eol=crlf

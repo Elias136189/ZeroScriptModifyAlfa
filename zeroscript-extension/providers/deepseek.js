@@ -658,7 +658,7 @@ const ZSProvider = (() => {
   // but a JS guard blocks the SEND past 163840 characters (= 160 KiB, validated
   // live 2026-07-22): the send button is swallowed and a toast "Content is too
   // long (N%)" appears (N = excess percentage, NOT a char count). A large tool
-  // result (big http_get / get_page_text / luau dump) would then silently wedge
+  // result (big http_get / get_page_text / code dump) would then silently wedge
   // the loop in the input box. Truncate outgoing text to a prudent margin below
   // the cap, keeping the head AND tail so neither the start nor the end of a
   // result is lost, and mark the gap so the model knows content was dropped and
@@ -745,7 +745,7 @@ const ZSProvider = (() => {
   const isTooLongMsg = (text) => RE.tooLong.test(text);
   const isBusyMsg = (text) => RE.busy.test(text);
 
-  // ── Image attachment (Studio captures → composer) ────────────────────────
+  // ── Image attachment (tool captures → composer) ─────────────────────────
   function fileFromImage(img, i) {
     const mime = img.mimeType || "image/jpeg";
     const bin = atob(img.data);
@@ -891,21 +891,21 @@ const ZSProvider = (() => {
 
   // ── Tool-block location for camouflage ────────────────────────────────────
   // Hide the raw tool call so nothing of it leaks beside the core's chip.
-  // DeepSeek markdown often SPLITS a ###LUA### … ###END_LUA### block across
-  // several <p> paragraphs, so we hide the whole CONTIGUOUS RUN of block-level
+  // DeepSeek markdown often SPLITS a ###MCP_TOOL### block across several <p>
+  // paragraphs, so we hide the whole CONTIGUOUS RUN of block-level
   // children from the start marker through the end marker. Returns where to
   // insert the chip: {parent, ref} - or null if no tool block was found.
   function findToolBlockSpot(item, chip) {
     const P = ZSParse;
-    const hasStart = (t) => P.LUA_START_RE.test(t) || t.includes("###mcp_tool###");
-    const hasEnd = (t) => P.LUA_END_RE.test(t) || t.includes("###end_mcp_tool###") || t.includes("###end-mcp_tool###");
+    const hasStart = (t) => t.includes("###mcp_tool###");
+    const hasEnd = (t) => t.includes("###end_mcp_tool###") || t.includes("###end-mcp_tool###");
     const isJson = (t) => /\{\s*"(?:command|tool)"\s*:/.test(t);
     // DeepSeek's own DSML tool-call markup (see ZSParse.DSML_RE). It is NOT a
     // fenced block and NOT JSON - it renders as ordinary prose paragraphs - so
     // neither predicate above matched it and nothing got hidden: the chip
     // appeared but the raw tags stayed on screen next to it (reported live
     // 2026-08-22). Its lines can be split across several paragraphs like a
-    // multi-element LUA block, so the contiguous run is hidden the same way.
+    // multi-element command block, so the contiguous run is hidden the same way.
     const isDsml = (t) => P.DSML_RE.test(t);
     // The reply markdown containers (never the reasoning/think area).
     const containers = [...item.querySelectorAll(S.markdown)].filter((m) => !m.closest(S.thinking));
@@ -929,7 +929,7 @@ const ZSProvider = (() => {
           let j = i + 1;
           while (j < kids.length && isDsml(kids[j].textContent || "")) { runEnd = j; j++; }
         } else if (startsBlock && !hasEnd(tLow)) {
-          // multi-element LUA/MCP block → extend until the end marker (or, if the
+          // multi-element command block → extend until the end marker (or, if the
           // turn is still truncated, to the end of this container).
           let j = i + 1;
           runEnd = kids.length - 1;
@@ -962,7 +962,7 @@ const ZSProvider = (() => {
     get supportsVision() { return isVisionSelected(); },
     timings,
     // Reasoning-area selector, exported so the CORE's raw-command-visible
-    // probes can exclude it: DeepSeek QUOTES the command JSON/###LUA### inside
+    // probes can exclude it: DeepSeek QUOTES the command JSON inside
     // its thinking, which the camouflage never hides (by design) - without
     // this exclusion those quotes read as "raw block still visible" forever
     // (seen live: 60Hz chip rebuild spam + done→run→done chip flapping).

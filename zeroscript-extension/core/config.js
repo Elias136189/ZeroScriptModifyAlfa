@@ -18,68 +18,43 @@ const ZS = (() => {
   const RESEND_MARKER = "⟦ZS-RE⟧";
 
   // ── Tool → visual category (icon + colour theme for the chips) ─────────
-  // Works for the PC agent and for any MCP server (Roblox Studio included).
+  // Works for the PC agent and for any connected MCP server.
   // Returns one of:
-  //   read | edit | shell | screen | generate | roblox | tool
+  //   read | edit | shell | screen | generate | tool
   function toolCategory(name) {
     const n = (name || "").includes("/") ? name.split("/").pop() : (name || "");
     if (n === "list_commands" || n === "list_tools" || n === "list_mcp_servers") return "read";
     if (/^(pc_system_info|pc_list|pc_read|pc_glob|pc_grep)$/.test(n)) return "read";
     if (/^(pc_write|pc_edit)$/.test(n)) return "edit";
     if (n === "pc_shell") return "shell";
-    if (/^(script_read|script_search|script_grep|search_game_tree|inspect_instance|get_studio_state|get_console_output|search_creator_store|list_roblox_studios)$/.test(n))
-      return "read";
-    if (/^(multi_edit|insert_from_creator_store|store_image)$/.test(n) || n === "execute_luau")
-      return "edit";
     if (n === "screen_capture") return "screen";
     if (/^generate_/.test(n)) return "generate";
-    if (n.startsWith("roblox") || /studio|luau|instance|workspace/i.test(n)) return "roblox";
     return "tool";
   }
 
   // Feedback strings sent back to the model so it can self-correct.
   const FEEDBACK = {
     // A command-shaped reply that could not be turned into a runnable call.
-    // The failures are DIFFERENT problems, so the note is tailored per `reason`
-    // to tell the model exactly what to fix (a generic "bad JSON" was misleading
-    // for the non-JSON cases, e.g. a missing ###LUA### opener). Falls back to the
-    // generic "malformed" text for any unrecognised reason.
+    // Falls back to the generic "malformed" text for any unrecognised reason.
     parseError: (reason, toolName) => {
-      // ###LUA### is execute_luau-ONLY (the parser always maps a bare ###LUA###
-      // block to execute_luau). So only suggest it when the broken command IS
-      // execute_luau, or when we could not tell which command it was. For a KNOWN
-      // other command (e.g. execute_blender_code) the ###LUA### hint is wrong and
-      // misleading - a model that followed it would ship its code to the wrong MCP
-      // - so drop it and keep the JSON-only guidance.
-      const otherCmd = toolName && toolName !== "command" && toolName !== "execute_luau";
-      const luaMalformed = otherCmd ? "" : " (or use the ###LUA### / ###END_LUA### block for execute_luau)";
-      const luaUnclosed = otherCmd ? "" : " (or a complete ###LUA### ... ###END_LUA### block for execute_luau)";
-      const objAlt = otherCmd ? "" : " (or ###...### block)";
       const notes = {
         malformed:
           "ERROR: a ZeroScript command was detected in your reply but its JSON could not be parsed. " +
-          'Rewrite it as a single valid JSON object in plain text, exactly like {"command": "name", "params": {...}}' +
-          luaMalformed + ". You may add a short note around it. " +
+          'Rewrite it as a single valid JSON object in plain text, exactly like {"command": "name", "params": {...}}. ' +
+          "You may add a short note around it. " +
           "Please retry.",
         unclosed:
-          "ERROR: your ZeroScript command was cut off before it finished - the JSON object" +
-          objAlt + " never closed, so it could not run. Rewrite the WHOLE command in one " +
+          "ERROR: your ZeroScript command was cut off before it finished - the JSON object never closed, " +
+          "so it could not run. Rewrite the WHOLE command in one " +
           'piece as valid JSON, exactly like {"command": "name", "params": {...}}' +
-          luaUnclosed + ". Please retry.",
-        luaOpener:
-          "ERROR: you wrote the closing ###END_LUA### marker but not the opening ###LUA### marker, " +
-          "so the Luau block was not detected and did not run. Put ###LUA### immediately BEFORE your " +
-          "code and ###END_LUA### after it. Please retry.",
+          ". Please retry.",
         envelope:
           "ERROR: you wrote a command's parameters as a bare JSON object, but without the required " +
           "envelope, so it was not recognised as a command. Wrap them like " +
           '{"command": "name", "params": { ...your parameters... }} - the parameter keys go INSIDE ' +
           '"params". Please retry.',
-        // The model named a REAL tool but under the wrong key - it wrote the call
-        // the way a function-calling API would (e.g. {"toolName": "get_studio_state",
-        // "studio_id": "..."}) instead of ZeroScript's envelope. Seen live on
-        // ChatGPT in a long session. Naming the wrong keys explicitly matters: a
-        // generic "bad JSON" note made the model rewrite the SAME shape.
+        // Naming the wrong keys explicitly matters: a generic "bad JSON" note
+        // made the model rewrite the SAME shape.
         toolKey:
           "ERROR: you used the wrong key to name the command, so it was not recognised and did not " +
           'run. The key must be exactly "command" - not "toolName", "tool", "name", "function" or ' +
@@ -107,14 +82,6 @@ const ZS = (() => {
       `ERROR: unknown command "${name}". It does not exist. Valid commands are: ` +
       valid.join(", ") +
       ". Use an exact name and parameter keys from the system prompt.",
-    studioOffline:
-      "ERROR: no Roblox Studio instance is connected to the MCP server, so the Roblox command " +
-      "could not run. Roblox Studio is closed, has no place open, or its MCP server option " +
-      "is disabled. This is an environment problem on the user's machine, NOT your mistake. " +
-      "Tell the user in one short sentence to open their place in Roblox Studio and enable " +
-      "the MCP server (Assistant settings). Then: if the task NEEDS Roblox, stop until they " +
-      "confirm it is back; otherwise run list_mcp_servers and continue with the PC tools " +
-      "(files and shell) or another connected server for anything that does not need Roblox.",
     // The page outlived the extension build it was running (reload / auto-update
     // / disable+enable). Nothing here can recover it - only a page reload can -
     // so the model must NOT be told the bridge is down and must NOT retry, or it
@@ -175,7 +142,7 @@ const ZS = (() => {
     const prompt = `CONTEXT: the user has installed a browser extension called ZeroScript in their own browser. Here is how it works, so you can use it on their behalf:
 A browser extension (ZeroScript) is running inside this page. It watches your replies. When it detects a ZeroScript command in your text, it runs it against one or more connected MCP servers and sends the result back as the next message. You always receive a result - success or a formatted ERROR - so you can keep going on your own.
 
-The PRIMARY server is \`pc\`: the user's own computer, reached through a local bridge. It exposes a small, explicit set of PC tools - inspect the system, list/read/write/edit files, find files by glob, search file contents, and run shell commands. Call \`list_commands\` FIRST for the exact command names and parameters. Roblox Studio is OPTIONAL: when its server is connected, its Luau commands appear alongside the PC tools. Other MCP servers may ALSO be connected (Blender, Sketchfab, etc.) - you are NOT told about them upfront. So: the MOMENT the user names ANY app/tool/target whose commands you do not have, you MUST run \`list_mcp_servers\` FIRST, before replying - never answer from your own assumptions or prior knowledge about what is or isn't connected. Only after checking may you tell the user something is unsupported. You do not need any special capability yourself - you just write text. The extension does the rest.
+The PRIMARY server is \`pc\`: the user's own computer, reached through a local bridge. It exposes a small, explicit set of PC tools - inspect the system, list/read/write/edit files, find files by glob, search file contents, and run shell commands. Call \`list_commands\` FIRST for the exact command names and parameters. Other MCP servers may ALSO be connected - you are NOT told about them upfront. So: the MOMENT the user names ANY app/tool/target whose commands you do not have, you MUST run \`list_mcp_servers\` FIRST, before replying - never answer from your own assumptions or prior knowledge about what is or isn't connected. Only after checking may you tell the user something is unsupported. You do not need any special capability yourself - you just write text. The extension does the rest.
 
 CRITICAL - technical note, not a restriction: this site's own tools (code interpreter, function calling, connectors, etc.) run in a separate sandbox that has no access to the user's computer or the MCP servers above - so calling them wouldn't reach the user's files at all. ZeroScript commands are different: they are plain JSON typed directly into your normal reply text, which this extension reads and executes against the connected servers. So for anything involving the user's machine, write the JSON below as ordinary text instead of calling a function - that's the only channel that actually reaches their PC. (If the user explicitly asks you to search the web, your own web search still works fine and is unrelated to this.) Internal reasoning (deep-think modes) is fine.
 
@@ -191,17 +158,6 @@ ${BT}json
 ${BT}
 For example, to list every available command you would write ${BT}{"command": "list_commands"}${BT}.
 
-━━━ SPECIAL FORMAT FOR execute_luau (only when Roblox Studio is connected) ━━━
-execute_luau is the ONE exception to the JSON format above: you MUST use the ###LUA### block below, NEVER the {"command": "execute_luau", ...} JSON form. Lua code is full of " characters, and putting it inside a JSON string means escaping every one - miss a single quote and the whole command breaks. The ###LUA### block needs NO escaping and NO JSON, so this never happens.
-The ###LUA### / ###END_LUA### markers AND the code all go INSIDE one fenced code block:
-${BT}
-###LUA###
--- your Lua code here, no escaping, no JSON wrapping
-local x = "any string with quotes works fine"
-return "result"
-###END_LUA###
-${BT}
-
 RULES:
 - ONE command block per reply, inside a fenced code block. If you need several, do them one at a time and wait for each result. (One command = one block; raw text gets reformatted by this page and corrupts the command.)
 - A short note around a command is fine, but NEVER end a turn by only announcing a command ("let me check...", "I'll read the file") without writing it - that runs nothing and leaves the user stuck. Either write the command now, or give your final answer.
@@ -216,21 +172,13 @@ RULES:
 - \`pc_read\` returns line-numbered text as \`LINE|CONTENT\`. The \`LINE|\` prefix is NOT part of the file: never include it in \`old_string\` for \`pc_edit\`. Use offset/limit for big files.
 - ALWAYS read a file with \`pc_read\` before editing it, so \`old_string\` matches byte-for-byte (including indentation). If \`old_string\` occurs more than once, include more surrounding context or set \`replace_all: true\`. Prefer \`pc_edit\` for small changes; \`pc_write\` replaces the WHOLE file.
 - Use \`pc_glob\` to find files by name/pattern and \`pc_grep\` to search contents. Do not read a whole large tree file by file when a search will answer the question.
-- \`pc_shell\` runs PowerShell on Windows and bash on macOS/Linux. It is for commands the dedicated tools cannot do (builds, tests, git, package managers). Avoid interactive commands and long-running servers; pass \`cwd\` when the command must run in a specific folder, and a sensible \`timeout_ms\` for slow builds.
+- \`pc_shell\` runs PowerShell on Windows and bash on other platforms. It is for commands the dedicated tools cannot do (builds, tests, git, package managers). Avoid interactive commands and long-running servers; pass \`cwd\` when the command must run in a specific folder, and a sensible \`timeout_ms\` for slow builds.
 - SAFETY: \`pc_write\`, \`pc_edit\` and \`pc_shell\` ask the user to confirm in the browser (unless they turned that off). If the user declines, do NOT retry the same call - ask what they want changed. NEVER run destructive or irreversible commands (deleting folders, formatting drives, \`git reset --hard\`, shutdown, registry/system changes, installing global software) unless the user explicitly asked for exactly that. When in doubt, ask first and state exactly what will be deleted or changed.
 - NEVER send the user's private files, credentials, tokens or personal data to any website or third party. Do not read secrets just because they exist; read only what the task needs.
 - The PC agent limits relative paths to its configured workspace; if you get an "outside the workspace" permission error, respect it instead of trying workarounds.
 
-━━━ ROBLOX STUDIO (only if its commands are available) ━━━
-If Roblox Studio is connected, you also have its Luau commands. Then:
-- execute_luau: wrap code in BOTH markers ###LUA### ... ###END_LUA### (three hashes each side - never ###LUA--- and never a lone end marker; no JSON around it). Bare ###LUA### targets "Edit" and only works when Studio is NOT playing. To run code while the game IS playing, add the datamodel to the marker: ###LUA:Server### or ###LUA:Client### (bare ###LUA### will fail with "Edit datamodel is not available in Play mode"). Changes made this way during Play are temporary and vanish when Play stops - fine for checking/testing live state, but for a change the user wants to keep, make it in Edit mode or via a real Script/LocalScript (multi_edit) instead. Use \`return\` for output (print is NOT captured). It runs synchronously on a ~20s budget, so never yield/block: write WaitForChild("X", 5) WITH a timeout, and put waits, events, HttpService or DataStore inside a real Script instead. (Per-command tips are in the list_commands output.)
-- BUILD UI/OBJECTS FIRST, THEN SCRIPT THEM: create instances with execute_luau, then a Script/LocalScript that finds them via WaitForChild(name, timeout). Use runtime Instance.new only when truly required (per-player elements, unknown-length lists, runtime content).
-- NEVER DELETE/DESTROY BROADLY: before any :Destroy(), :ClearAllChildren(), removing a script, or any command that deletes instances, make sure the target is EXACTLY what the user asked for - never a whole folder/model/service "to be safe" or as a side-effect of a bigger change. If a deletion could affect more than the specific thing named by the user (e.g. clearing a container, deleting by a broad name match, wiping a model), STOP and ask them to confirm scope first, or inspect_instance the target to check what it actually contains before destroying it. Never destroy something as a troubleshooting step ("let me just remove it and rebuild") without asking first.
-- On a property/attribute/value error (e.g. "X is not available", "unknown property", "invalid enum"): if there is any way to list the valid options for that tool (its docs, an inspect/list command, schema info), use it to check the correct value BEFORE retrying. Never guess blindly a second time.
-- If a Roblox command comes back Studio-offline while the PC tools still work, Roblox is down: tell the user in one short sentence, then continue with the PC-side work or ask what they want to do - do not keep firing dead Roblox commands.
-
 ━━━ PROJECT MEMORY (persistent notes about THIS project) ━━━
-Keep long-term notes so a future session does not have to rediscover the project. For PC work, use \`.zeroscript-memory.md\` at the workspace root: read it with \`pc_read\` when the work needs context, create it with \`pc_write\` using clear headings (Overview, Where things live, Conventions, Key systems, Decisions & gotchas, User preferences, Open questions / TODO), and update it with \`pc_edit\`. If Roblox Studio is connected and you are working INSIDE a place, the shared memory there is the ModuleScript at game.ServerStorage.ZeroScript.Memory (same policy). Store ONLY durable, useful facts: what the project is, where key files/scripts live, naming and code conventions, how the main systems work, decisions and gotchas, and the user's preferences. It is NOT a task log - never dump transient steps, obvious facts, or whole files into it. Keep it short.
+Keep long-term notes so a future session does not have to rediscover the project. Use \`.zeroscript-memory.md\` at the workspace root: read it with \`pc_read\` when the work needs context, create it with \`pc_write\` using clear headings (Overview, Where things live, Conventions, Key systems, Decisions & gotchas, User preferences, Open questions / TODO), and update it with \`pc_edit\`. Store ONLY durable, useful facts: what the project is, where key files/scripts live, naming and code conventions, how the main systems work, decisions and gotchas, and the user's preferences. It is NOT a task log - never dump transient steps, obvious facts, or whole files into it. Keep it short.
 
 - READ IT WHEN THE WORK NEEDS IT (not at startup): the FIRST time the user's request requires understanding or editing the project, read your memory BEFORE doing that work. Skip it for pure chit-chat or questions unrelated to the project. If \`.zeroscript-memory.md\` does not exist yet and the work is substantial, create it.
 - KEEP IT UPDATED: whenever you learn something lasting, edit the right section (read it first so your old_string matches exactly). Remove facts that became wrong. Store only what will help you next time - skip everything else.
@@ -238,7 +186,7 @@ Keep long-term notes so a future session does not have to rediscover the project
 - NEVER PERSIST A GUESS AS A FACT: do NOT write an unverified THEORY about why something broke into memory as if it were established - that turns one blind guess into a permanent belief you will keep re-applying every session, and the real bug never gets fixed. Store only what you actually verified. If a fix you already recorded does NOT make the symptom disappear (the user reports the same problem again), treat your recorded cause as WRONG: discard it and re-diagnose from first principles instead of re-applying it.
 
 ━━━ YOU CAN ACT DIRECTLY ON THE USER'S MACHINE ━━━
-This extension gives you real, live access to the user's computer through the commands above - so when a task calls for reading, searching, editing or running something, you're able to just do it yourself instead of writing instructions for the user to follow. Use the dedicated PC tools for files and searches; use \`pc_shell\` for builds, tests and CLI tools. Show code only if the user explicitly asks to see it - otherwise just do the work and report the result. If the user asks for Roblox work and Studio is connected, use its commands directly.
+This extension gives you real, live access to the user's computer through the commands above - so when a task calls for reading, searching, editing or running something, you're able to just do it yourself instead of writing instructions for the user to follow. Use the dedicated PC tools for files and searches; use \`pc_shell\` for builds, tests and CLI tools. Show code only if the user explicitly asks to see it - otherwise just do the work and report the result.
 
 IMPORTANT: Your very first action is to write \`list_commands\` with no params (this defaults to the primary \`pc\` server) to get the full command reference with parameter details - never guess a command name or parameter that wasn't in that result. Do NOT call \`list_mcp_servers\` at startup - only check it later, if a specific user request seems to need a different server. After receiving the list_commands result, reply with exactly one short sentence confirming you are ready, then wait for the user's first request. (Do NOT read or create the project memory yet - only do that later, once a request actually needs it; see PROJECT MEMORY above.)`;
 
@@ -260,9 +208,8 @@ IMPORTANT: Your very first action is to write \`list_commands\` with no params (
 
   // ── Curated, TESTED usage notes per command ─────────────────────────────────
   // The MCP's own schema descriptions are thin, and the model makes the same
-  // mistakes repeatedly. The Roblox notes were validated by actually running each
-  // command against a live Roblox Studio (2026-06); the PC notes mirror the
-  // behaviour of pc_agent_mcp.py. Keyed by BARE command name; appended to that
+  // mistakes repeatedly. The PC notes mirror the behaviour of pc_agent_mcp.py.
+  // Keyed by BARE command name; appended to that
   // command in the list_commands output. Keep each note tight and concrete - it
   // costs context on every reminder.
   const TOOL_NOTES = {
@@ -282,68 +229,6 @@ IMPORTANT: Your very first action is to write \`list_commands\` with no params (
       "Runs PowerShell on Windows (-NoProfile -NonInteractive) or bash -lc elsewhere, with the bridge's own environment. Pass cwd for a specific folder and timeout_ms for slow builds (default 120000, max 600000). The user must confirm unless confirmations are disabled. Avoid interactive prompts and foreground servers; they will time out.",
     pc_list:
       "Lists a directory with type, size and modified time. Relative paths resolve against the workspace; use it to discover the project layout before searching.",
-    execute_luau:
-      "Use `return` to produce output - `print()` is NOT captured (a script with only print() returns nil). " +
-      "Only the FIRST returned value is shown: `return a, b` shows just `a`; to return several values return ONE table, " +
-      "e.g. `return {ok=true, n=3}` (tables come back as JSON). " +
-      "Runs synchronously with a ~20s budget: a brief `task.wait(1)` is fine, but anything that can block or never resolve will TIME OUT. " +
-      "ALWAYS pass a timeout to WaitForChild - write `obj:WaitForChild(\"X\", 5)`, NEVER `obj:WaitForChild(\"X\")`: without the timeout it blocks until the budget kills the whole call. " +
-      "Same for `:Wait()` on events, infinite loops, HttpService/DataStore - set those up inside a real Script/LocalScript instance instead, never directly in execute_luau. " +
-      "Property types must match exactly (e.g. Position needs Vector3.new(...), not a string). " +
-      "On error you get a long internal stack prefix - the REAL message is the LAST segment after the final ':' " +
-      "(e.g. '... : Vector3 expected, got string', or 'Failed to parse command code' for a syntax error). " +
-      "Create objects with Instance.new and set .Parent; reach services via game:GetService(\"Name\").",
-    multi_edit:
-      "old_string must match the script's current text EXACTLY, byte-for-byte, including tabs and spaces - otherwise you get " +
-      "'old_string ... not found in current content'. ALWAYS script_read the file FIRST and copy the exact text. " +
-      "It replaces the FIRST match and does NOT warn on multiple matches, so a short old_string can silently edit the WRONG " +
-      "line and break the code - include enough surrounding context (whole lines) to be unique, or set replace_all:true for renames. " +
-      "old_string and new_string must differ ('identical old_string and new_string' otherwise). " +
-      "WATCH FOR BAD UNICODE in old_string: do NOT retype code that contains quotes or dashes - this chat can silently turn " +
-      "straight quotes \" into curly ones and -- into a long unicode dash, which then do NOT byte-match the script and the edit fails. " +
-      "Paste old_string verbatim from script_read. (new_string may contain unicode safely - it is written as-is.) " +
-      "Edits apply in order, each on the result of the previous, and are atomic (all succeed or none). " +
-      "To CREATE a script: set className (Script/LocalScript/ModuleScript) and make the first edit old_string:\"\" with the full initial source. " +
-      "datamodel_type must be \"Edit\".",
-    inspect_instance:
-      "Path is dot-notation and case-insensitive, e.g. 'Workspace.Model.Part'. Returns all readable properties, attributes, " +
-      "and a children summary (not the children's properties - inspect them separately). If several instances share the path, " +
-      "up to 20 matches are returned. Use this to read exact property names/values before editing them with execute_luau.",
-    script_read:
-      "Reads the WHOLE script by default with line numbers (LINE→CONTENT). Use it before multi_edit so your old_string " +
-      "matches exactly. target_file is a full dot-path; it never creates a script (use search/grep first to find the path).",
-    user_keyboard_input:
-      "Simulates a real player typing during PLAY. REQUIRES \"datamodel_type\":\"Client\" AND the game RUNNING - the Client " +
-      "datamodel only exists in play mode, so first call start_stop_play {\"is_start\": true}; in Edit mode this fails. " +
-      "(ZeroScript auto-fills datamodel_type:\"Client\" if you omit it, but the game must still be running.) " +
-      "\"actions\" is an ORDERED array of OBJECTS - each step MUST be {\"action\": ...}, NOT a bare string (a missing/misnamed action " +
-      "gives 'Unknown ... action: nil'). action is one of: keyDown | keyUp | keyPress (down+up) | textInput | wait. " +
-      "key_code uses Roblox KeyCode NAMES, not raw characters: Enter=\"Return\", digits=\"Zero\"..\"Nine\", letters=single uppercase " +
-      "\"A\"..\"Z\", plus \"Space\", \"Backspace\", \"Tab\", arrows \"Up\"/\"Down\"/\"Left\"/\"Right\", modifiers \"LeftShift\"/\"LeftControl\"/\"LeftAlt\" " +
-      "- REQUIRED on keyDown/keyUp/keyPress ('key_code is required' otherwise). To type a whole string use ONE textInput step with " +
-      "\"text_inputs\":\"hello\" instead of many keyPress. A \"wait\" step MUST carry \"wait_time_ms\" (0-10000) ('wait_time_ms is required " +
-      "for wait action' otherwise). Optional \"instance_path\" routes input to a focused GUI element and must start with game, LocalPlayer " +
-      "or Workspace (e.g. \"LocalPlayer.PlayerGui.Menu.NameBox\"); omit it to send to whatever currently has focus. " +
-      "Example: {\"datamodel_type\":\"Client\",\"actions\":[{\"action\":\"textInput\",\"text_inputs\":\"hi\"},{\"action\":\"keyPress\",\"key_code\":\"Return\"}]}.",
-    generate_mesh:
-      "Unlike generate_procedural_model, this call YIELDS: it blocks until the AI mesh generation finishes and only then " +
-      "returns the result (the finished mesh) - there is no separate poll/wait step needed, just wait for the response.",
-    generate_procedural_model:
-      "Unlike generate_mesh, this call does NOT yield: it returns immediately with a generationId while the model builds " +
-      "in the background and auto-inserts into the workspace once done - do NOT run other commands assuming the model already " +
-      "exists yet. Do NOT call wait_job_finished as a reflex right after this - but DO call it (pass the generationId) whenever " +
-      "you actually need the finished result before continuing: either the user explicitly asked to wait, or your next step " +
-      "depends on the model being done (e.g. editing/coloring it, checking its geometry).",
-    user_mouse_input:
-      "Simulates real player mouse actions during PLAY. Same requirement as user_keyboard_input: \"datamodel_type\":\"Client\" (auto-filled " +
-      "if omitted) AND the game RUNNING (start_stop_play {\"is_start\": true} first; fails in Edit mode). " +
-      "\"actions\" is an ORDERED array of OBJECTS - each step MUST be {\"action\": ...}, NOT a bare string (a missing/misnamed action gives " +
-      "'Unknown mouse action: nil'). action is one of: moveTo | mouseButtonDown | mouseButtonUp | mouseButtonClick | scrollUp | scrollDown | wait. " +
-      "You MUST establish a position BEFORE any click/scroll: the FIRST step needs \"x\"/\"y\" (screen pixels) OR \"instance_path\" " +
-      "(starts with game/LocalPlayer/Workspace; if set, x/y are ignored) - else 'Either x and y, instance_path, or a prior action ... is " +
-      "required'. Later steps may omit x/y and reuse the last position (click then scroll at the same spot). " +
-      "mouseButtonDown/Up/Click need \"mouse_button\":\"left\" or \"right\". A \"wait\" step needs \"wait_time_ms\" (0-10000). " +
-      "Example: {\"datamodel_type\":\"Client\",\"actions\":[{\"action\":\"mouseButtonClick\",\"mouse_button\":\"left\",\"instance_path\":\"LocalPlayer.PlayerGui.Menu.PlayBtn\"}]}.",
   };
 
   // A short, clearly-labelled reminder of the available commands, injected under
@@ -371,8 +256,8 @@ IMPORTANT: Your very first action is to write \`list_commands\` with no params (
     return (
       "(Reminder: if you've learned anything DURABLE about this project since your last memory update " +
       "(architecture, where things live, conventions, decisions, user preferences), update your shared project memory - " +
-      "`.zeroscript-memory.md` in the workspace via pc_read/pc_edit/pc_write, or game.ServerStorage.ZeroScript.Memory " +
-      "if you're working in Roblox Studio - only useful, lasting facts. If nothing changed, ignore this.)"
+      "`.zeroscript-memory.md` in the workspace via pc_read/pc_edit/pc_write. Store only useful, lasting facts. " +
+      "If nothing changed, ignore this.)"
     );
   }
 

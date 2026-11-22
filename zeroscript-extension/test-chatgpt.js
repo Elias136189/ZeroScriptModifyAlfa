@@ -70,16 +70,16 @@ const ok = (name, cond) => { console.log((cond ? "PASS" : "FAIL") + "  " + name)
 // ── The CodeMirror line collapse (the 1.5.1 headline bug) ───────────────────
 // A code block is <div class="cm-content"> with one <div class="cm-line"> per
 // source line and no newline text nodes anywhere. Reading it with textContent
-// returns `###LUA###return 1+1###END_LUA###` - one line, unparseable. Every
+// returns `###MCP_TOOL###{"command":"list_items"}###END_MCP_TOOL###` - one line, unparseable. Every
 // cm-line must terminate.
 const cmBlock = (lines, attrs) =>
   el("div", { class: "cm-content", attrs: attrs || {} },
      lines.map((l) => el("div", { class: "cm-line" }, l === "" ? [] : [l])));
 
-const collapsed = P.textWithout(cmBlock(["###LUA###", "return 1+1", "###END_LUA###"]));
-ok("cm-lines are newline-terminated", collapsed.includes("###LUA###\nreturn 1+1\n###END_LUA###"));
+const collapsed = P.textWithout(cmBlock(["###MCP_TOOL###", '{"command":"list_items"}', "###END_MCP_TOOL###"]));
+ok("cm-lines are newline-terminated", collapsed.includes('###MCP_TOOL###\n{"command":"list_items"}\n###END_MCP_TOOL###'));
 
-// A blank source line is an EMPTY cm-line. Swallowing it shifts every Luau
+// A blank source line is an EMPTY cm-line. Swallowing it shifts every source
 // error line number reported afterwards, so it must survive as "\n".
 const blanks = P.textWithout(cmBlock(["local a = 1", "", "return a"]));
 ok("empty cm-line survives as a blank line", /local a = 1\n\nreturn a/.test(blanks));
@@ -119,7 +119,7 @@ ok("a <br> is a newline", /^a\nb\n?$/.test(P.textWithout(el("p", {}, ["a", el("b
 // The core passes ".zs-chip" so its own injected chip never counts as model
 // output (a chip echoing a tool name would otherwise re-trigger the call).
 const withChip = P.textWithout(
-  el("div", {}, [el("p", {}, ["real reply"]), el("div", { class: "zs-chip" }, ["execute_luau · 2s"])]),
+  el("div", {}, [el("p", {}, ["real reply"]), el("div", { class: "zs-chip" }, ["list_items · 2s"])]),
   ".zs-chip"
 );
-ok("excluded subtree is skipped", withChip.includes("real reply") && !withChip.includes("execute_luau"));
+ok("excluded subtree is skipped", withChip.includes("real reply") && !withChip.includes("list_items"));

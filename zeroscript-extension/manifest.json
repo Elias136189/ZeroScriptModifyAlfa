@@ -3,7 +3,7 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArG7BkJXLo2jkLEym60yUTdHP+vcsdewG9DgBI9ikBqyvGjf6p0V42VSp45J6goCaXwW9hFNHT/qtm0g9R/CkA1/C1NRUIbSi5n9s/zsvFlwXu1O+49lSpdLFxH7+KBwFYMacnnCwwUz6fOGPaUPS1cdA3dL8qW5tKvBS/FT/f7Rno/JwPVv0SU6/QTY6rhhsithhBcUgsQfWG/6GU7tA75QQkFKMCSHpUQwt7xpd9KtT8d/JGU9f8V0tJM3T73/YnCz1Ey/SF42/x1/xypHvMg16FfmiHcC59ljN6GnbblBqGtt3yYm/PUhfLuSHyKhXCLOg9iBlTfnalkyPRPZ8zQIDAQAB",
   "name": "ZeroScript Free × AI Agent for your PC",
   "version": "2.2.0",
-  "description": "Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into an agent for your own computer: read/write files, search them and run commands through a local bridge. Roblox Studio is supported as an optional addon.",
+  "description": "Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into an agent for your own computer: read/write files, search them and run commands through a local bridge.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://chat.deepseek.com/*",
