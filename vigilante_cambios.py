@@ -67,7 +67,7 @@ MCP_ACTIONS_MAX_ENTRIES = 40
 IGNORE_DIRS = {"__pycache__", ".git", "logs", "backups", "assets", "workspace_wake", "runtime"}
 IGNORE_NAMES = {"desktop.ini", "Thumbs.db"}
 IGNORE_PREFIXES = ("~$", ".#")
-IGNORE_SUFFIXES = (".swp", ".swx", "~")
+IGNORE_SUFFIXES = (".swp", ".swx", "~", ".zs.lock")
 
 DEBOUNCE_SECONDS = 0.5
 ATTRIBUTION_WINDOW_SECONDS = 5.0

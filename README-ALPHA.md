@@ -1,9 +1,11 @@
-# ZeroScript Modify — Alpha
+# ZeroScript Modify — Nota histórica (Alfa -> Beta 0.3.0)
+
+> **Nota:** Este proyecto pasó a fase **Beta (`0.3.0-beta`)**. Consulta la documentación principal actualizada en [README.md](README.md).
 
 Fork **no oficial** de ZeroScript Free, en desarrollo activo. El nombre es
 provisional: el proyecto se construye sobre el original y conserva parte de su
 código, pero añade piezas propias (mensajero, vigilante de cambios, perfiles de
-permisos, arranque oculto y buzón compartido multi-IA).
+permisos y buzón compartido horizontal multi-IA).
 
 - **Estado:** alfa. Hay funciones sin verificar de extremo a extremo.
 - **Licencia:** GPL-3.0 (se conserva la del proyecto original).

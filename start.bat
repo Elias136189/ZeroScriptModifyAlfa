@@ -10,18 +10,11 @@ if not defined ZS_BRIDGE_PORT set "ZS_BRIDGE_PORT=17613"
 if not defined CHAT_LOCAL_PORT set "CHAT_LOCAL_PORT=8765"
 
 REM Opciones de linea de comandos:
-REM   start.bat /consola   -> abre el bridge en una ventana de consola visible
 REM   start.bat /nochat    -> no abre el chat local en el navegador
-REM   start.bat /nopause   -> termina sin esperar tecla al final
-set "OPT_CONSOLE=0"
 set "OPT_NOCHAT=0"
-set "OPT_NOPAUSE=0"
 :parse_args
 if "%~1"=="" goto :args_done
-if /i "%~1"=="/consola" set "OPT_CONSOLE=1"
-if /i "%~1"=="/console" set "OPT_CONSOLE=1"
 if /i "%~1"=="/nochat"  set "OPT_NOCHAT=1"
-if /i "%~1"=="/nopause" set "OPT_NOPAUSE=1"
 shift
 goto :parse_args
 :args_done
@@ -124,12 +117,6 @@ for /f "tokens=*" %%v in ('"%PY_EXE%" --version 2^>^&1') do set "PY_VER=%%v"
 echo         Python [!PY_MODE!]: !PY_VER!
 echo         Ruta: !PY_EXE!
 call :log "Python selected [!PY_MODE!]: !PY_EXE! [!PY_VER!]"
-if defined PYW_EXE (
-    call :log "pythonw.exe found: !PYW_EXE!"
-) else (
-    echo         AVISO: pythonw.exe no encontrado; el bridge se abrira en consola.
-    call :log "WARNING: pythonw.exe not found; bridge will use console."
-)
 
 REM --- 2. Verificar libreria websockets --------------------------------------
 echo.

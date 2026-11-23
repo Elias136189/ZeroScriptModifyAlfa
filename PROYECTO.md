@@ -1,7 +1,7 @@
 # ZeroScript Modify - Documentación del proyecto
 
-> Documento generado el 15-nov-2026 y actualizado el 21-nov-2026 leyendo el código y la configuración reales de la carpeta
-> `%USERPROFILE%\Documents\Monero\ZeroScriptModify`.
+> Documento generado el 15-nov-2026 y actualizado el 23-nov-2026 leyendo el código y la configuración reales de la carpeta
+> `%USERPROFILE%\Documents\Monero\ZeroScriptModify` (Beta `0.3.0`).
 > La carpeta se llamó antes `ZeroScript-Free-1.5.5 - copia`; las rutas antiguas que aparecen en
 > `backups\` y `logs\` son históricas.
 > Lo que aparece como "verificado" se comprobó ejecutando o leyendo el archivo; lo marcado como
@@ -43,8 +43,8 @@ Utilidades sobre el buzón
   limpiar_buzon.py      -> archiva mensajes leídos antiguos
 ```
 
-Cada cliente MCP se identifica con la variable `ZS_PC_AGENT_NAME` (por ejemplo `claude`, `opencode`).
-El bridge lanza su propio `pc_agent_mcp.py` con la identidad por defecto `zeroscript`.
+Cada cliente MCP de escritorio se identifica con `ZS_PC_AGENT_NAME` (por ejemplo `claude`, `opencode`, `antigravity`).
+El bridge lanza un proceso `pc_agent_mcp.py --agent <NombreDeLaWeb> --alias <proveedor>` independiente por cada pestaña de IA web activa, tomando el modelo visible en la página web (con desambiguación `-2`, `-3` si hay pestañas repetidas) y manteniéndose en primer plano desde `start.bat` con un Job Object para cerrar puente, MCPs, mensajero y `chat-local` al cerrar la ventana.
 
 ## 3. Estructura de la carpeta
 
@@ -66,7 +66,8 @@ El bridge lanza su propio `pc_agent_mcp.py` con la identidad por defecto `zerosc
 | `zeroscript-extension\` | Extensión de navegador (manifest v3 con `"key"` RSA fija), proveedores y pruebas en Node |
 | `vigilante_cambios.py` / `vigilante_cambios.bat` | Vigilante del sistema de archivos (necesita `watchdog`). Precarga `(mtime_ns, size)` al arrancar para ignorar lecturas y registra CREATED, MODIFIED, DELETED y MOVED en `logs\registro_cambios\cambios_AAAA-Wss.log`. Ignora `__pycache__`, `.git`, `logs`, `backups`, `assets`, `runtime` y `workspace_wake`. Comandos: `run`, `start`, `ensure`, `stop`, `status`, `ver [N]` |
 | `instalar_vigilante.bat` / `desinstalar_vigilante.bat` | La instalación crea `ZeroScript_Vigilante_Cambios.vbs` en la carpeta Inicio del usuario (sin admin; `ensure` lo hace automáticamente solo en PCs nuevas). `desinstalar_vigilante.bat` detiene el proceso, borra el VBS de Inicio y elimina la tarea programada si existiera |
-| `README-ALPHA.md`, `MCP_CLIENTS.md`, `CHANGELOG.md` | Documentación (el duplicado `README.md`, `INFORME_CODIGO_MCP.md`, `bridge_segundo_plano.vbs`, `despertar.txt`, `patch_claude1.py`, `ocultar_ventana.ps1`, `launch_studio_mcp.py` y `MacOS_Start.command` se retiraron) |
+| `README.md`, `README-ALPHA.md`, `MCP_CLIENTS.md`, `CHANGELOG.md` | Documentación principal (Beta `0.3.0`) y notas históricas |
+| `tests\test_zeroscript.py` | Suite de pruebas automatizadas en Python (`unittest`, sin dependencias externas) |
 | `assets\` | Icono de la extensión (`icon.png`) |
 | `backups\` | Copias hechas antes de cambios (archivos `.antes-*` y la carpeta `arreglos-20261114-212149`) |
 | `logs\` | `start.log`, `bridge_debug.log`, `despertar.log`, `pc_agent_mcp_*.log`, `vigilante_cambios.pid` y `registro_cambios\` (registros semanales del vigilante, con autor) |
@@ -144,9 +145,9 @@ Servidor HTTP en `127.0.0.1:8765` con `ThreadingHTTPServer`.
   `usuario` exige petición del mismo origen. Un mensaje sin remitente se guarda como `sin-firma`.
 - **Opción "todos" (nueva):** en el campo "Para", `todos` envía una copia del mensaje a cada agente
   conectado (si no se sabe cuáles hay, a `claude` y `opencode`). Solo funciona desde la página.
-- Agentes conectados: cada 30 s como máximo (y solo mientras la página los pide) lista los procesos
-  con PowerShell y busca `pc_agent_mcp.py` cuyo proceso padre sea Claude, OpenCode, Antigravity,
-  Codex o Kimi. Solo en Windows.
+- Agentes conectados: cada 15 s como máximo (y solo mientras la página los pide) lista los procesos
+  con PowerShell y detecta cada `pc_agent_mcp.py` tanto por `--agent <Nombre>` (IAs web con el nombre
+  de su página) como por proceso padre (Claude Desktop, OpenCode, Antigravity, Codex o Kimi Code CLI). Solo en Windows.
 - `chat.html`: consulta cada 3 s, pestañas por agente, escribe con `textContent` (sin XSS), Enter
   envía y Shift+Enter hace salto de línea.
 - `lanzar_chat.ps1` arranca el servidor oculto, espera a que responda de verdad y abre el navegador
@@ -225,19 +226,18 @@ verifica si puede escribir en `logs\` (si Windows Defender CFA lo bloquea dentro
 automáticamente a Python 3.9+ del sistema como respaldo); (3) comprueba `websockets`; (4) si el puerto
 del bridge (`ZS_BRIDGE_PORT`, 17613) está ocupado, verifica por línea de comandos que pertenezca a
 `bridge.py` antes de cerrarlo; (5) arranca el chat local, muestra el estado del mensajero, ejecuta
-`vigilante_cambios.py ensure` (instala y arranca el vigilante solo si detecta una PC nueva) y lanza
-`bridge.py` oculto con `pythonw.exe` (o en consola con `/consola`). Acepta también `/nochat` y `/nopause`.
+`vigilante_cambios.py ensure` (instala y arranca el vigilante solo si detecta una PC nueva) y ejecuta
+`bridge.py` en **primer plano** dentro de esa misma ventana CMD (con opción `/nochat` y recarga automática
+cuando el puente sale con código `42`).
 
-`pythonw.exe` es un binario de subsistema GUI: **no tiene consola**, así que el bridge, el PC agent
-y el mensajero corren sin ninguna ventana y sobreviven al cierre de la ventana de `start.bat`. El
-lanzador espera ~3 s y muestra el PID que quedó escuchando en `ws://127.0.0.1:17613`; si no
-responde, avisa y apunta a `logs\bridge_debug.log`. El chat local (`http://127.0.0.1:8765`) sigue
-vivo tras cerrar el lanzador (`lanzar_chat.ps1` reutiliza el servidor en el siguiente arranque).
+Al ejecutarse en primer plano con un Windows Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) y
+`SetConsoleCtrlHandler`, cerrar esa ventana CMD (`X` o `Ctrl+C`) apaga automáticamente `bridge.py`,
+todos los procesos `pc_agent_mcp.py`, el mensajero y el servidor de `chat-local`.
 
 El archivo debe estar en **CRLF**: en LF, `cmd.exe` desalinea bloques y `goto`, y aparecen errores
-como un `pause` inesperado o `No se esperaba . en este momento`. Todo queda en `logs\start.log`.
+como `No se esperaba . en este momento`. Todo queda en `logs\start.log`.
 
-### 4.7 Extensión de navegador (`zeroscript-extension\`, versión 2.2.0)
+### 4.7 Extensión de navegador (`zeroscript-extension\`, ZeroScriptModify v0.2.0)
 
 - Manifest v3. Un service worker (`background.js`) mantiene el WebSocket al bridge con reconexión y
   latido. `core\main.js` (263 KB) contiene el bucle del agente, la interfaz y la confirmación antes de

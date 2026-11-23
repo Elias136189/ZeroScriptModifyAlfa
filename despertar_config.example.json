@@ -17,7 +17,15 @@
     "antigravity",
     "claude",
     "claude-code",
-    "codex"
+    "codex",
+    "deepseek*",
+    "chatgpt*",
+    "gemini*",
+    "qwen*",
+    "kimi*",
+    "glm*",
+    "arena*",
+    "meta*"
   ],
   "trigger": {
     "require": true,

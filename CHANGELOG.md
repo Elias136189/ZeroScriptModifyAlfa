@@ -1,6 +1,29 @@
 # Changelog
 
-All notable changes to ZeroScript Free are documented here.
+All notable changes to ZeroScript Modify are documented here.
+
+## [0.3.0-beta] - 2026-11-23
+
+### Added — coordinación horizontal, aislamiento web y paso a Beta
+- **Suite de pruebas Python (`tests/test_zeroscript.py`).** Cobertura con `unittest` (biblioteca estándar) para buzón, concurrencia optimista, `ESTADO_TAREA.md`, identidad fija, detección de ciclos en `max_hops`, `.wake_lock`, comodines en `despertar.py`, filtro `.zs.lock` en `vigilante_cambios.py`, desambiguación por pestaña en `bridge.py` y extracción `--agent` en `chat-local/server.py`. Documentación principal en `README.md`.
+- **Controles mecánicos de coordinación horizontal (`pc_agent_mcp.py`, `despertar.py`, `mailbox_store.py`, `config.js`):**
+  - **Anti-evasión de `max_hops` con detección de ciclos dirigida:** `tool_msg_send()` encadena `reply_to` y suma `hops` tanto en pares (`A ↔ B`) como en ciclos dirigidos de 3+ IAs (`A → B → C → A`), sin bloquear tareas nuevas dirigidas a terceros sin ciclo ni despertares legítimos con `@despertar`.
+  - **Concurrencia optimista y lock por archivo:** `pc_read` guarda huella SHA-256 (`[rev: ...]`); `pc_write` y `pc_edit` ejecutan bajo lock inter-proceso `.zs.lock` (ignorado por `vigilante_cambios.py`) y rechazan escrituras si el archivo cambió en disco tras la lectura o por otro agente MCP.
+  - **Estado vivo de tarea (`ESTADO_TAREA.md`):** `pc_system_info` adjunta automáticamente `ESTADO_TAREA.md` (últimas 48h) junto al resumen de diffs y acciones MCP.
+  - **Protocolo horizontal anti-eco** en `INSTRUCTIONS` y `zeroscript-extension/core/config.js` (asuntos `[PROPUESTA]`/`[AUDITORIA]`/`[EJECUCION]`/`[BLOQUEO]`, verificación previa con `pc_read`/`pc_grep` y cero respuestas de cortesía).
+  - **Identidad fija por proceso (`_resolve_alias`)** y **bloqueo temporal `.wake_lock_<destino>.lock`** en `despertar.py` (`method="window"`), validado por `message_id` en `msg_reply`.
+- **Nombres reales de IAs web y aislamiento por pestaña (`zeroscript-extension/`, `bridge.py`, `pc_agent_mcp.py`, `chat-local/`):**
+  - `getPageAgentName()` toma el modelo/nombre visible en la página web activa y lanza un `pc_agent_mcp.py --agent <Nombre> --alias <proveedor>` por pestaña (con sufijo `-2`, `-3` si hay pestañas repetidas).
+  - `chat-local` detecta `--agent`, reduce `SCAN_EVERY_S` a 15s validando salida de PowerShell, conserva el último estado válido si falla un escaneo y muestra pestañas/colores propios para cada IA web.
+- **Caja negra 48h, diálogo fuera de workspace y ciclo de vida CMD (`vigilante_cambios.py`, `start.bat`, `bridge.py`):**
+  - Diffs compactos con atribución `mcp:<agente>` y bitácora MCP 48h integrados en `pc_system_info`.
+  - Diálogo nativo de confirmación de un solo uso fuera del workspace (`prompt_outside_workspace`).
+  - Ventana en primer plano en `start.bat` con Job Object en `bridge.py` para cierre limpio conjunto y limpieza de flags obsoletos (`/consola`, `/nopause`), más comodines de IAs web en `despertar_config.example.json`.
+
+### Security & Cleanup
+- Eliminado `new Function()` en `zeroscript-extension/test-parser.js` y `test-chatgpt.js` (reemplazado por `module.exports` / `require` en `parser.js` y `chatgpt.js`).
+- Eliminado el acceso directo residual en `zeroscript-extension/providers/` y normalizados finales de línea CRLF en `chat-local/` y scripts `.py`.
+- Rebranding de la extensión a `ZeroScriptModify v0.2.0` y tareas `asyncio` supervisadas en `bridge.py`.
 
 ## [Unreleased]
 

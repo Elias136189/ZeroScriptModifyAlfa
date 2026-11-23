@@ -44,6 +44,7 @@ PY_FILES = [
     "limpiar_buzon.py",
     "chat-local/server.py",
     "comprobar_proyecto.py",
+    "tests/test_zeroscript.py",
 ]
 
 JSON_FILES = {
@@ -59,6 +60,7 @@ OBLIGATORIOS = [
     "pc_agent_mcp.py",
     "start.bat",
     "LICENSE",
+    "README.md",
     "README-ALPHA.md",
     "zeroscript-extension/manifest.json",
     "chat-local/server.py",

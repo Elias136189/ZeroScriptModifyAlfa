@@ -51,6 +51,7 @@
 # ──────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
+import collections
 import concurrent.futures
 import contextlib
 import fnmatch
@@ -1082,8 +1083,25 @@ def _check_wake_lock(tool_name: str) -> None:
             pass
 
 
-def _clear_wake_lock() -> None:
+def _clear_wake_lock(replied_id: str = "") -> None:
+    now = time.time()
+    wanted_id = str(replied_id or "").strip()
     for lock_path in _wake_lock_paths_for_current_agent():
+        if not lock_path.is_file():
+            continue
+        if wanted_id:
+            try:
+                data = json.loads(lock_path.read_text(encoding="utf-8"))
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                lock_msg_id = str(data.get("message_id") or "").strip()
+                try:
+                    expires_at = float(data.get("expires_at") or 0.0)
+                except Exception:
+                    expires_at = 0.0
+                if lock_msg_id and lock_msg_id != wanted_id and now < expires_at:
+                    continue
         try:
             lock_path.unlink(missing_ok=True)
         except OSError:
@@ -1685,7 +1703,7 @@ def _create_message(
 
 
 def _infer_active_thread(sender: str, to_raw: Any, window_s: float = 900.0) -> tuple[str, int]:
-    """Si ya hay conversacion activa entre sender y to sin 'reply_to', encadena hilo y hops."""
+    """Si ya hay dialogo activo en par o ciclo dirigido reciente sin 'reply_to', encadena hilo y hops."""
     recipient = mailbox_store.clean_agent_name(to_raw, "")
     sender_low = sender.casefold()
     rec_low = recipient.casefold()
@@ -1704,6 +1722,7 @@ def _infer_active_thread(sender: str, to_raw: Any, window_s: float = 900.0) -> t
             if stamp > last_user_ts:
                 last_user_ts = stamp
     last_pair: tuple[float, dict[str, Any]] | None = None
+    edges: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
     for path, message in entries:
         stamp = mailbox_store.message_timestamp(path, message)
         if now - stamp > window_s or stamp <= last_user_ts:
@@ -1713,24 +1732,59 @@ def _infer_active_thread(sender: str, to_raw: Any, window_s: float = 900.0) -> t
         if (m_from == rec_low and m_to == sender_low) or (m_from == sender_low and m_to == rec_low):
             if last_pair is None or stamp >= last_pair[0]:
                 last_pair = (stamp, message)
-    if last_pair is None:
+        if m_from not in ("", "usuario") and m_to not in ("", "usuario", "todos") and m_from != m_to:
+            prev_edge = edges.get((m_from, m_to))
+            if prev_edge is None or stamp >= prev_edge[0]:
+                edges[(m_from, m_to)] = (stamp, message)
+
+    candidates: list[tuple[int, float, dict[str, Any]]] = []
+    if last_pair is not None:
+        p_stamp, p_msg = last_pair
+        p_from = str(p_msg.get("from") or "").strip().casefold()
+        try:
+            p_hops = int(p_msg.get("hops") or 0)
+        except Exception:
+            p_hops = 0
+        if p_from == rec_low or p_hops > 0:
+            candidates.append((p_hops, p_stamp, p_msg))
+
+    if edges and rec_low != sender_low:
+        adj: dict[str, list[tuple[str, float, dict[str, Any]]]] = {}
+        for (src, dst), (e_stamp, e_msg) in edges.items():
+            adj.setdefault(src, []).append((dst, e_stamp, e_msg))
+        queue: collections.deque[tuple[str, int, int, float, dict[str, Any] | None]] = collections.deque(
+            [(rec_low, 0, 0, 0.0, None)]
+        )
+        best_seen: dict[str, int] = {rec_low: 0}
+        while queue:
+            cur, path_len, max_h, _last_ts, _last_msg = queue.popleft()
+            if path_len >= 8:
+                continue
+            for dst, e_stamp, e_msg in adj.get(cur, ()):
+                try:
+                    e_hops = int(e_msg.get("hops") or 0)
+                except Exception:
+                    e_hops = 0
+                next_len = path_len + 1
+                next_max = max(max_h, e_hops, next_len - 1)
+                if dst == sender_low:
+                    candidates.append((next_max, e_stamp, e_msg))
+                    continue
+                if dst not in best_seen or next_max > best_seen[dst]:
+                    best_seen[dst] = next_max
+                    queue.append((dst, next_len, next_max, e_stamp, e_msg))
+
+    if not candidates:
         return "", 0
-    _ts, msg = last_pair
-    m_from = str(msg.get("from") or "").strip().casefold()
-    try:
-        prev_hops = int(msg.get("hops") or 0)
-    except Exception:
-        prev_hops = 0
-    if m_from == rec_low:
-        next_hops = prev_hops + 1
-        _check_hops(next_hops)
-        return str(msg.get("id") or "").strip(), next_hops
-    if prev_hops > 0:
-        next_hops = prev_hops + 1
-        _check_hops(next_hops)
-        chain_id = str(msg.get("reply_to") or msg.get("id") or "").strip()
-        return chain_id, next_hops
-    return "", 0
+    best_hops, _best_ts, best_msg = max(candidates, key=lambda item: (item[0], item[1]))
+    next_hops = best_hops + 1
+    _check_hops(next_hops)
+    b_from = str(best_msg.get("from") or "").strip().casefold()
+    if b_from != sender_low:
+        chain_id = str(best_msg.get("id") or "").strip()
+    else:
+        chain_id = str(best_msg.get("reply_to") or best_msg.get("id") or "").strip()
+    return chain_id, next_hops
 
 
 def tool_msg_send(args: dict[str, Any]) -> str:
@@ -1925,7 +1979,7 @@ def tool_msg_reply(args: dict[str, Any]) -> str:
         hops=_hops_for(message_id),
         sender=alias,
     )
-    _clear_wake_lock()
+    _clear_wake_lock(message_id)
     return (
         f"Respuesta enviada a {recipient}.\n"
         f"id: {new_id}\n"
