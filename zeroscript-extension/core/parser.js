@@ -296,3 +296,7 @@ const ZSParse = (() => {
     isInjectedFeedback, hasCommandShape,
   };
 })();
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = ZSParse;
+}

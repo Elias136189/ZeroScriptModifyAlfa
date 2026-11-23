@@ -25,6 +25,7 @@ import hmac
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -492,11 +493,11 @@ class MCPClient:
         self.proc = None
         self.req_id = 1
         self.write_lock = threading.Lock()
-        self.call_lock = threading.Lock()   # serialize tool calls (single stdio pipe)
         self.pending = {}                    # id -> queue.Queue (one slot)
         self.pend_lock = threading.Lock()
         self.tools_cache = []
         self.start_lock = threading.Lock()
+        self.restart_lock = threading.Lock()
         self._reader_thread = None
         # Crash-loop forensics (read by server_watch). The auto-restart used to
         # hide a server that something else kills over and over: the terminal
@@ -619,10 +620,11 @@ class MCPClient:
         return self.proc is not None and self.proc.poll() is None
 
     def restart(self):
-        log(f"[{self.id}] restarting...", "yl")
-        self.stop()
-        time.sleep(0.4)
-        self.start()
+        with self.restart_lock:
+            log(f"[{self.id}] restarting...", "yl")
+            self.stop()
+            time.sleep(0.4)
+            self.start()
 
     def stop(self):
         with self.pend_lock:
@@ -745,32 +747,37 @@ class MCPClient:
         return self.tools_cache
 
     def call_tool(self, name, arguments, timeout):
-        """Returns {"text":..., "images":[...]}. Raises on error/timeout."""
-        with self.call_lock:
-            for attempt in (1, 2):
+        """Returns {"text":..., "images":[...]}. Raises on error/timeout.
+
+        Concurrent calls on the same MCPClient share one stdio pipe safely:
+        write_lock guards stdin writes and _reader routes replies by JSON-RPC id.
+        """
+        for attempt in (1, 2):
+            if not self.is_alive():
+                with self.restart_lock:
+                    if not self.is_alive():
+                        self.start()
+            msg = self._request("tools/call",
+                                {"name": name, "arguments": arguments}, timeout)
+            if msg is None:
                 if not self.is_alive():
                     self.restart()
-                msg = self._request("tools/call",
-                                    {"name": name, "arguments": arguments}, timeout)
+                    msg = self._request("tools/call",
+                                        {"name": name, "arguments": arguments}, timeout)
                 if msg is None:
-                    if not self.is_alive():
-                        self.restart()
-                        msg = self._request("tools/call",
-                                            {"name": name, "arguments": arguments}, timeout)
-                    if msg is None:
-                        raise TimeoutError(
-                            f"No response from server '{self.id}' after {timeout}s.")
-                if msg.get("error"):
-                    err = msg["error"]
-                    err_text = err.get("message", json.dumps(err))
-                    raise RuntimeError(err_text)
-                content = msg.get("result", {}).get("content", [])
-                text = "\n".join(it.get("text", "") for it in content if it.get("type") == "text")
-                images = [{"data": it["data"], "mimeType": it.get("mimeType", "image/jpeg")}
-                          for it in content if it.get("type") == "image" and it.get("data")]
-                if not text and not images and content:
-                    text = json.dumps(content)[:4000]
-                return {"text": text, "images": images}
+                    raise TimeoutError(
+                        f"No response from server '{self.id}' after {timeout}s.")
+            if msg.get("error"):
+                err = msg["error"]
+                err_text = err.get("message", json.dumps(err))
+                raise RuntimeError(err_text)
+            content = msg.get("result", {}).get("content", [])
+            text = "\n".join(it.get("text", "") for it in content if it.get("type") == "text")
+            images = [{"data": it["data"], "mimeType": it.get("mimeType", "image/jpeg")}
+                      for it in content if it.get("type") == "image" and it.get("data")]
+            if not text and not images and content:
+                text = json.dumps(content)[:4000]
+            return {"text": text, "images": images}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -779,14 +786,21 @@ class MCPClient:
 class MCPManager:
     def __init__(self):
         self.clients = {}          # server_id -> MCPClient
+        self.specs = {}            # server_id -> {command, args, env}
+        self.agent_clients = {}    # (server_id, agent_key) -> MCPClient dedicado por IA
+        self.tab_agents = {}       # (server_id, tab_id) -> (agent_key, effective_agent_name)
+        self.agent_lock = threading.Lock()
         self.index = {}            # advertised_name -> (holder, real_name)
         self.index_lock = threading.Lock()
 
     def load_config(self):
         servers = _read_config().get("mcpServers", {}) or {}
         for sid, spec in servers.items():
-            self.clients[sid] = MCPClient(
-                sid, spec.get("command"), spec.get("args"), spec.get("env"))
+            cmd = spec.get("command")
+            args = list(spec.get("args") or [])
+            env = dict(spec.get("env") or {})
+            self.specs[sid] = {"command": cmd, "args": args, "env": env}
+            self.clients[sid] = MCPClient(sid, cmd, args, env)
         log(f"configured {len(self.clients)} MCP server(s): {', '.join(self.clients) or '(none)'}", "cy")
 
     def start_all(self):
@@ -846,7 +860,126 @@ class MCPManager:
                 out.append(tt)
         return out
 
-    def call(self, name, arguments, timeout):
+    @staticmethod
+    def _clean_agent(raw):
+        if not raw:
+            return ""
+        cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "", str(raw).strip()).strip("._-")
+        return cleaned[:32]
+
+    def _uses_pc_agent(self, sid):
+        if sid == "pc":
+            return True
+        spec = self.specs.get(sid) or {}
+        cmd = str(spec.get("command") or "").lower()
+        args = " ".join(str(a).lower() for a in (spec.get("args") or []))
+        return "pc_agent_mcp" in cmd or "pc_agent_mcp" in args
+
+    def _resolve_tab_agent_locked(self, sid, clean_agent, tab_id):
+        if tab_id is None:
+            return clean_agent
+        tkey = (sid, str(tab_id))
+        old_Clients_to_stop = []
+        existing = self.tab_agents.get(tkey)
+        if existing is not None:
+            old_key, old_name = existing
+            base_low = clean_agent.casefold()
+            if old_key == base_low or (
+                old_key.startswith(base_low + "-") and old_key[len(base_low) + 1:].isdigit()
+            ):
+                return old_name
+            # La pestaña cambio de modelo/IA en la pagina web -> liberar el anterior
+            del self.tab_agents[tkey]
+            still_used = any(k == old_key for (s, _t), (k, _n) in self.tab_agents.items() if s == sid)
+            if not still_used:
+                old_client = self.agent_clients.pop((sid, old_key), None)
+                if old_client is not None:
+                    old_Clients_to_stop.append(old_client)
+
+        used_keys = {k for (s, _t), (k, _n) in self.tab_agents.items() if s == sid}
+        candidate = clean_agent
+        n = 2
+        while candidate.casefold() in used_keys:
+            suffix = f"-{n}"
+            candidate = f"{clean_agent[:max(1, 32 - len(suffix))]}{suffix}"
+            n += 1
+        self.tab_agents[tkey] = (candidate.casefold(), candidate)
+        for old_c in old_Clients_to_stop:
+            threading.Thread(target=old_c.stop, daemon=True).start()
+        return candidate
+
+    def _client_for_agent(self, holder, agent, provider=None, tab_id=None):
+        clean_agent = self._clean_agent(agent)
+        if not clean_agent or not self._uses_pc_agent(holder.id):
+            return holder
+        clean_provider = self._clean_agent(provider)
+        with self.agent_lock:
+            effective_agent = self._resolve_tab_agent_locked(holder.id, clean_agent, tab_id)
+            key = (holder.id, effective_agent.casefold())
+            existing = self.agent_clients.get(key)
+            if existing is not None:
+                return existing
+            spec = self.specs.get(holder.id)
+            if not spec:
+                return holder
+            env = dict(spec.get("env") or {})
+            env["ZS_PC_AGENT_NAME"] = effective_agent
+            extra_args = list(spec.get("args") or []) + ["--agent", effective_agent]
+            aliases = []
+            if clean_provider and clean_provider.casefold() != effective_agent.casefold():
+                aliases.append(clean_provider)
+            if clean_agent.casefold() != effective_agent.casefold() and clean_agent.casefold() not in [a.casefold() for a in aliases]:
+                aliases.append(clean_agent)
+            for al in aliases:
+                extra_args.extend(["--alias", al])
+            if aliases:
+                env["ZS_PC_AGENT_ALIASES"] = ",".join(aliases)
+            dedicated = MCPClient(
+                f"{holder.id}:{effective_agent}",
+                spec.get("command"),
+                extra_args,
+                env,
+            )
+            self.agent_clients[key] = dedicated
+            log(f"[{holder.id}] spawning dedicated MCP worker for AI '{effective_agent}'", "cy")
+            return dedicated
+
+    def ensure_agent(self, agent, provider=None, tab_id=None):
+        clean_agent = self._clean_agent(agent)
+        if not clean_agent:
+            return
+        for sid, holder in list(self.clients.items()):
+            if not self._uses_pc_agent(sid):
+                continue
+            client = self._client_for_agent(holder, clean_agent, provider=provider, tab_id=tab_id)
+            if client is not holder and not client.is_alive():
+                try:
+                    client.start()
+                except Exception as e:
+                    log(f"[{client.id}] failed to start dedicated worker: {e}", "yl")
+
+    def release_tab(self, tab_id):
+        if tab_id is None:
+            return
+        to_stop = []
+        with self.agent_lock:
+            tkeys = [tk for tk in self.tab_agents if tk[1] == str(tab_id)]
+            for tk in tkeys:
+                sid, _ = tk
+                old_key, old_name = self.tab_agents.pop(tk)
+                still_used = any(k == old_key for (s, _t), (k, _n) in self.tab_agents.items() if s == sid)
+                if not still_used:
+                    client = self.agent_clients.pop((sid, old_key), None)
+                    if client is not None:
+                        to_stop.append((old_name, client))
+        for old_name, client in to_stop:
+            log(f"[{client.id}] stopping dedicated MCP worker for closed tab '{old_name}'", "yl")
+            try:
+                client.stop()
+            except Exception:
+                pass
+
+    def call(self, name, arguments, timeout, agent=None, provider=None, tab_id=None):
         with self.index_lock:
             entry = self.index.get(name)
         if entry is None:
@@ -857,7 +990,8 @@ class MCPManager:
         if entry is None:
             raise RuntimeError(f"unknown tool '{name}'")
         holder, real_name = entry
-        return holder.call_tool(real_name, arguments, timeout)
+        target = self._client_for_agent(holder, agent, provider=provider, tab_id=tab_id)
+        return target.call_tool(real_name, arguments, timeout)
 
     def restart(self, server_id=None):
         targets = [self.clients[server_id]] if server_id and server_id in self.clients else list(self.clients.values())
@@ -866,7 +1000,33 @@ class MCPManager:
                 client.restart()
             except Exception as e:
                 log(f"[{client.id}] restart failed: {e}", "rd")
+        with self.agent_lock:
+            agent_targets = [
+                c for (sid, _ag), c in self.agent_clients.items()
+                if not server_id or sid == server_id
+            ]
+        for client in agent_targets:
+            try:
+                client.restart()
+            except Exception as e:
+                log(f"[{client.id}] restart failed: {e}", "rd")
         self.rebuild_index()
+
+    def stop_all_clients(self):
+        for c in list(self.clients.values()):
+            try:
+                c.stop()
+            except Exception:
+                pass
+        with self.agent_lock:
+            dedicated = list(self.agent_clients.values())
+            self.agent_clients.clear()
+            self.tab_agents.clear()
+        for c in dedicated:
+            try:
+                c.stop()
+            except Exception:
+                pass
 
     def health(self):
         return [{"id": sid, "alive": c.is_alive(), "tools": len(c.tools_cache)}
@@ -881,11 +1041,32 @@ class MCPManager:
 # ══════════════════════════════════════════════════════════════════════════
 mgr = MCPManager()
 clients = set()
+_bg_tasks = set()
 
-def safe_call(name, arguments, timeout):
-    """Never raises. Always returns a dict the extension can feed back to DeepSeek."""
+
+def _spawn_task(coro, label="task"):
+    """Lanza una tarea asyncio con referencia fuerte y log de errores no capturados."""
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+
+    def _done(t):
+        _bg_tasks.discard(t)
+        if t.cancelled():
+            return
+        try:
+            exc = t.exception()
+        except Exception:
+            return
+        if exc is not None:
+            log(f"background {label} error: {exc}", "yl")
+
+    task.add_done_callback(_done)
+    return task
+
+def safe_call(name, arguments, timeout, agent=None, provider=None, tab_id=None):
+    """Never raises. Always returns a dict the extension can feed back to the AI."""
     try:
-        result = mgr.call(name, arguments, timeout)
+        result = mgr.call(name, arguments, timeout, agent=agent, provider=provider, tab_id=tab_id)
         return {"ok": True, "text": result["text"], "images": result["images"]}
     except TimeoutError as e:
         return {"ok": False, "error": str(e), "kind": "timeout"}
@@ -893,22 +1074,20 @@ def safe_call(name, arguments, timeout):
         return {"ok": False, "error": str(e), "kind": type(e).__name__}
 
 
-async def run_tool_task(ws, name, args, timeout, rid):
+async def run_tool_task(ws, name, args, timeout, rid, agent=None, provider=None, tab_id=None):
     """Execute one tool off the socket read loop and send its result back.
 
     Kept as a standalone task (not awaited inline in handler) so a long tool
     never starves the connection's ability to answer app-level pings - see the
     call_tool branch in handler() for the full rationale."""
     t0 = time.monotonic()
-    res = await asyncio.to_thread(safe_call, name, args, timeout)
+    res = await asyncio.to_thread(safe_call, name, args, timeout, agent, provider, tab_id)
     elapsed = time.monotonic() - t0
     tag = "gr" if res.get("ok") else "rd"
     summary = (res.get("text") or res.get("error") or "")[:80].replace("\n", " ")
     slow = "  [SLOW]" if elapsed > 5 else ""
-    # Routine per-call traces are technical noise for a non-dev user watching
-    # the console; they still land in bridge_debug.log. A failed/slow call
-    # DOES surface on the terminal - that's the signal a user should notice.
-    log(f"<- {name} ({elapsed:.1f}s){slow}: {summary}", tag, terminal=not res.get("ok") or elapsed > 5)
+    who = f"[{agent}] " if agent else ""
+    log(f"<- {who}{name} ({elapsed:.1f}s){slow}: {summary}", tag, terminal=not res.get("ok") or elapsed > 5)
     try:
         await ws.send(json.dumps({"type": "tool_result", "id": rid, **res}))
     except websockets.ConnectionClosed:
@@ -1105,6 +1284,11 @@ async def handler(ws):
                 await ws.send(json.dumps({"type": "pong", "id": rid}))
 
             elif mtype == "list_tools":
+                agent = msg.get("agent") or ""
+                provider = msg.get("provider") or ""
+                tab_id = msg.get("tab_id")
+                if agent:
+                    _spawn_task(asyncio.to_thread(mgr.ensure_agent, agent, provider, tab_id), f"ensure_agent:{agent}")
                 try:
                     tools = await asyncio.to_thread(mgr.list_tools, True)
                 except Exception as e:
@@ -1116,22 +1300,24 @@ async def handler(ws):
                     "servers": mgr.health(),
                 }))
 
+            elif mtype == "tab_closed":
+                tab_id = msg.get("tab_id")
+                if tab_id is not None:
+                    _spawn_task(asyncio.to_thread(mgr.release_tab, tab_id), f"release_tab:{tab_id}")
+                if rid is not None:
+                    await ws.send(json.dumps({"type": "ack", "id": rid, "ok": True}))
+
             elif mtype == "call_tool":
                 name = msg.get("name", "")
                 args = msg.get("arguments") or {}
+                agent = msg.get("agent") or ""
+                provider = msg.get("provider") or ""
+                tab_id = msg.get("tab_id")
                 timeout = float(msg.get("timeout", 120000)) / 1000.0
-                log(f"-> tool  {name}({', '.join(args.keys())})", "cy", terminal=False)
+                who = f"[{agent}] " if agent else ""
+                log(f"-> tool  {who}{name}({', '.join(args.keys())})", "cy", terminal=False)
                 # Run the tool as a BACKGROUND task instead of awaiting it here.
-                # Awaiting inline parks this read loop for the WHOLE tool call, so
-                # a long tool (e.g. wait_job_finished > 25s) means the client's
-                # app-level pings are never read/answered - its half-open-socket
-                # watchdog then force-closes the connection and the in-flight call
-                # is dropped as "bridge unreachable" (reported live). As a task,
-                # the loop stays free to answer pings/status while the tool runs.
-                # The extension only ever has ONE call_tool in flight (its agent
-                # loop awaits each result before sending the next), so this never
-                # overlaps tool executions.
-                asyncio.create_task(run_tool_task(ws, name, args, timeout, rid))
+                _spawn_task(run_tool_task(ws, name, args, timeout, rid, agent=agent, provider=provider, tab_id=tab_id), f"tool:{name}")
 
             elif mtype in ("add_server", "remove_server"):
                 # Adding/removing an addon MCP server rewrites config.json, which
@@ -1155,7 +1341,7 @@ async def handler(ws):
                     async def _do_restart():
                         await asyncio.sleep(0.4)
                         restart_self()
-                    asyncio.create_task(_do_restart())
+                    _spawn_task(_do_restart(), "restart_self")
 
             elif mtype == "restart_mcp":
                 sid = msg.get("server")
@@ -1500,11 +1686,7 @@ def _shutdown_all(reason="shutdown", stop_chat=True):
         _SHUTDOWN_DONE = True
     log(f"shutting down ({reason})...", "yl")
     try:
-        for c in list(mgr.clients.values()):
-            try:
-                c.stop()
-            except Exception:
-                pass
+        mgr.stop_all_clients()
     except Exception:
         pass
     try:

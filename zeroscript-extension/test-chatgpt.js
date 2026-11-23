@@ -13,7 +13,6 @@
 // stub DOM (below) - just enough of the Node/Element surface that textWithout
 // walks. No jsdom, no npm install: the repo has no dependencies and this test
 // keeps it that way.
-const fs = require("fs");
 
 // ── Stub DOM ────────────────────────────────────────────────────────────────
 // el("div", {class, attrs}, children) / txt("…"). Only the members textWithout
@@ -61,9 +60,7 @@ global.location = global.window.location;
 global.CustomEvent = class { constructor(t) { this.type = t; } };
 global.MutationObserver = class { observe() {} disconnect() {} };
 global.getComputedStyle = () => ({});
-const P = new Function(
-  fs.readFileSync(__dirname + "/providers/chatgpt.js", "utf8") + "; return ZSProvider;"
-)();
+const P = require("./providers/chatgpt.js");
 
 const ok = (name, cond) => { console.log((cond ? "PASS" : "FAIL") + "  " + name); if (!cond) process.exitCode = 1; };
 

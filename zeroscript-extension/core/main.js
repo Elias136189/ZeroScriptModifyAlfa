@@ -848,17 +848,100 @@
   // How long a fetched catalogue stays good enough to reuse without a round trip.
   const TOOLS_TTL_MS = 30000;
 
+  // Obtiene el nombre de la IA o modelo que aparece en la página web actual
+  // para identificarla con su nombre real en el chat grupal y en su agente MCP dedicado.
+  function cleanPageAgentName(raw, fallback) {
+    const s = String(raw || "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .replace(/[^A-Za-z0-9_.-]+/g, "")
+      .replace(/-{2,}/g, "-")
+      .replace(/^[._-]+|[._-]+$/g, "");
+    return s.slice(0, 32) || fallback || "web";
+  }
+
+  function getPageAgentName() {
+    const baseDisplay = cleanPageAgentName(P.displayName || P.id, P.id || "web");
+    try {
+      if (typeof P.pageAgentName === "function") {
+        const custom = cleanPageAgentName(P.pageAgentName(), "");
+        if (custom) return custom;
+      }
+      const pid = String(P.id || "").toLowerCase();
+      if (pid === "qwen") {
+        const el = document.querySelector('[class*="model-selector-text"]');
+        const txt = el ? (el.textContent || "").trim() : "";
+        if (txt) return cleanPageAgentName(txt, baseDisplay);
+      } else if (pid === "kimi") {
+        const el = document.querySelector(".current-model .model-name, .current-model .name");
+        const txt = el ? (el.textContent || "").trim() : "";
+        if (txt) {
+          const tagged = /^kimi/i.test(txt) ? txt : `Kimi-${txt}`;
+          return cleanPageAgentName(tagged, "Kimi-Web");
+        }
+        return "Kimi-Web";
+      } else if (pid === "arena") {
+        const last = P.lastAssistant && P.lastAssistant();
+        if (last) {
+          const m = (last.textContent || "").match(/Response provided by\s+([A-Za-z0-9_./:-]+)/i);
+          if (m && m[1]) {
+            const vendor = m[1].split("/").pop();
+            return cleanPageAgentName(/^arena/i.test(vendor) ? vendor : `Arena-${vendor}`, baseDisplay);
+          }
+        }
+        for (const c of document.querySelectorAll('button[role="combobox"]')) {
+          if (c.offsetParent === null) continue;
+          const t = (c.textContent || "").trim();
+          if (!t || /\b(direct|battle|agent|side by side|select|choose)\b/i.test(t)) continue;
+          const model = t.split(/\s+/)[0];
+          if (model && model.length >= 2) {
+            return cleanPageAgentName(/^arena/i.test(model) ? model : `Arena-${model}`, baseDisplay);
+          }
+        }
+      } else if (pid === "chatgpt") {
+        const el = document.querySelector('[data-testid="model-switcher-dropdown-button"]');
+        const txt = el ? (el.textContent || "").trim() : "";
+        if (txt) {
+          const tagged = /^chatgpt/i.test(txt) ? txt : `ChatGPT-${txt}`;
+          return cleanPageAgentName(tagged, baseDisplay);
+        }
+      } else if (pid === "gemini") {
+        const el = document.querySelector('[data-test-id="bard-mode-menu-button"], .bard-mode-switcher button');
+        const txt = el ? (el.textContent || "").trim() : "";
+        if (txt) {
+          const tagged = /^gemini/i.test(txt) ? txt : `Gemini-${txt}`;
+          return cleanPageAgentName(tagged, baseDisplay);
+        }
+      } else if (pid === "glm") {
+        for (const el of document.querySelectorAll('[id*="model"], [class*="model"]')) {
+          if (el.offsetParent === null || el.closest("#zs-root")) continue;
+          const m = (el.textContent || "").match(/\b(GLM[-_\s]?[0-9A-Za-z.]+)\b/i);
+          if (m && m[1]) return cleanPageAgentName(m[1], baseDisplay);
+        }
+      } else if (pid === "deepseek") {
+        const radio = document.querySelector('[role="radiogroup"] [role="radio"][aria-checked="true"]');
+        const rtxt = radio ? (radio.textContent || "").trim() : "";
+        if (rtxt && /^deepseek/i.test(rtxt)) {
+          return cleanPageAgentName(rtxt, baseDisplay);
+        }
+      }
+    } catch {}
+    return baseDisplay;
+  }
+
   // Refresh the tool catalogue - but never pay for it twice in a row.
   //
   // The boot sequence asks for the catalogue several times in a row; a short TTL
   // collapses those requests and avoids delaying the first tool call.
   async function ensureTools(force) {
-    if (!force && A.toolList.length && Date.now() - A.toolsAt < TOOLS_TTL_MS) {
-      diag("tools.cached", { age: Date.now() - A.toolsAt, n: A.toolList.length });
+    const pageAgent = getPageAgentName();
+    if (!force && A.lastPageAgent === pageAgent && A.toolList.length && Date.now() - A.toolsAt < TOOLS_TTL_MS) {
+      diag("tools.cached", { age: Date.now() - A.toolsAt, n: A.toolList.length, agent: pageAgent });
       return A.toolList;
     }
+    A.lastPageAgent = pageAgent;
     const t0 = Date.now();
-    const r = await bg({ type: "list_tools" });
+    const r = await bg({ type: "list_tools", agent: pageAgent, provider: P.id });
     diag("tools.fetched", { ms: Date.now() - t0, n: (r && r.tools && r.tools.length) || 0 });
     if (r && r.tools && r.tools.length) {
       const tools = r.tools.filter((t) => !isBlockedTool(t.name));
@@ -1064,7 +1147,11 @@
     const stopWatch = new Promise((res) => {
       stopTimer = setInterval(() => { if (A.stop) res({ ok: false, kind: "stopped" }); }, 150);
     });
-    let r = await Promise.race([bg({ type: "call_tool", name, arguments: args, timeout }), hardCap, stopWatch]);
+    let r = await Promise.race([
+      bg({ type: "call_tool", name, arguments: args, timeout, agent: getPageAgentName(), provider: P.id }),
+      hardCap,
+      stopWatch,
+    ]);
     clearInterval(stopTimer);
     if (r && r.kind === "stopped") return "(stopped by user)";
     if (!r) return ZS.FEEDBACK.bridgeOffline;
@@ -2930,6 +3017,15 @@
     //  • existing chat    → "No agent in this chat" (informs only, no action)
     function renderBar() {
       if (!bar) return;
+      if (!A._lastAgentCheckAt || Date.now() - A._lastAgentCheckAt > 2000) {
+        A._lastAgentCheckAt = Date.now();
+        const curAgent = getPageAgentName();
+        const swName = root && root.querySelector("#zs-switch-name");
+        if (swName && curAgent) swName.textContent = curAgent;
+        if (curAgent && A.lastPageAgent && curAgent !== A.lastPageAgent && A.bridge && A.bridge.connected) {
+          ensureTools(true).catch(() => {});
+        }
+      }
       // indicator = an optional leading dot/spinner; msg = the wrappable text.
       let toneClass = "standby", indicator = "", msg = "", label = "", kind = "", disabled = false, warn = false;
       // Orphaned page: check FIRST and return. Nothing below can be true any

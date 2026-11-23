@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import fnmatch
 import json
 import os
 import shutil
@@ -425,9 +426,11 @@ def collect_messages(
             retry_at = 0.0
 
         reason = ""
-        if str(message.get("from") or "").strip().casefold() == wanted:
+        sender_low = str(message.get("from") or "").strip().casefold()
+        sender_ok = not allowed or any(fnmatch.fnmatchcase(sender_low, pat) for pat in allowed)
+        if sender_low == wanted:
             reason = "lo envio el propio destino"
-        elif allowed and str(message.get("from") or "").strip().casefold() not in allowed:
+        elif not sender_ok:
             reason = "remitente no permitido"
         elif str(message.get("reply_to") or "").strip():
             reason = f"es respuesta (reply_to={short_id(message.get('reply_to'))})"

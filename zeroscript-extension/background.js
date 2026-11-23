@@ -294,15 +294,31 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         // 10s, not 25s: a catalogue request only blocks this long when one of the
         // MCP server is dead, and in that case we already hold a perfectly good
         // cached catalogue. Waiting the full 25s just froze the boot for no new data.
-        const r = await send({ type: "list_tools" }, 10000);
+        const tabId = (_sender && _sender.tab && _sender.tab.id != null) ? _sender.tab.id : null;
+        const r = await send({
+          type: "list_tools",
+          agent: msg.agent || "",
+          provider: msg.provider || "",
+          tab_id: tabId,
+        }, 10000);
         if (r.ok) sendResponse({ ok: true, tools: r.tools });
         else sendResponse({ ok: toolsCache.length > 0, tools: toolsCache, error: r.error });
         break;
       }
       case "call_tool": {
         const timeout = (msg.timeout || 120000) + 10000;
+        const tabId = (_sender && _sender.tab && _sender.tab.id != null) ? _sender.tab.id : null;
+        const tabAgent = tabId != null ? `tab-${tabId}` : "";
         const r = await send(
-          { type: "call_tool", name: msg.name, arguments: msg.arguments, timeout: msg.timeout },
+          {
+            type: "call_tool",
+            name: msg.name,
+            arguments: msg.arguments,
+            timeout: msg.timeout,
+            agent: msg.agent || tabAgent,
+            provider: msg.provider || "",
+            tab_id: tabId,
+          },
           timeout
         );
         sendResponse(r);
@@ -341,5 +357,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 // Wake/keepalive hooks.
 chrome.runtime.onStartup.addListener(() => connect());
 chrome.runtime.onInstalled.addListener(() => connect());
+try {
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    if (connected) {
+      send({ type: "tab_closed", tab_id: tabId }, 3000).catch(() => {});
+    }
+  });
+} catch {}
 
 connect();

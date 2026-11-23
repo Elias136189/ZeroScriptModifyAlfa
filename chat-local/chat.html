@@ -74,19 +74,45 @@ let all = [];
 let filter = 'todos';
 let lastKey = '';
 
-// Etiqueta visible y color según quién envió el mensaje.
+// Etiqueta visible y color según quién envió el mensaje (toma el nombre real de la página web para las IAs web).
+const WEB_DEFAULTS = {
+  deepseek:   { text: 'DeepSeek', color: '#4d6bfe' },
+  chatgpt:    { text: 'ChatGPT',  color: '#10a37f' },
+  gemini:     { text: 'Gemini',   color: '#4285f4' },
+  qwen:       { text: 'Qwen',     color: '#635bff' },
+  'kimi-web': { text: 'Kimi',     color: '#e0467c' },
+  glm:        { text: 'GLM',      color: '#3b82f6' },
+  arena:      { text: 'Arena',    color: '#d97706' },
+  meta:       { text: 'Meta AI',  color: '#0668e1' },
+  'meta-ai':  { text: 'Meta AI',  color: '#0668e1' },
+};
+
+function webColor(low) {
+  for (const [k, info] of Object.entries(WEB_DEFAULTS)) {
+    if (low === k || low.startsWith(k + '-') || low.startsWith(k)) return info.color;
+  }
+  return 'var(--web)';
+}
+
 function who(name) {
-  const n = String(name || '').toLowerCase();
-  if (n === USER) return { text: 'Tú', color: 'var(--user)', group: 'tu' };
+  const raw = String(name || '').trim();
+  const n = raw.toLowerCase();
+  if (n === USER.toLowerCase()) return { text: 'Tú', color: 'var(--user)', group: 'tu' };
   if (n === 'sin-firma') return { text: 'Sin firma', color: 'var(--other)', group: 'otros' };
   if (n === 'opencode') return { text: 'OpenCode', color: 'var(--opencode)', group: 'opencode' };
   if (n === 'claude' || n.includes('claude-desktop') || n.includes('claude_desktop'))
     return { text: 'Claude Desktop', color: 'var(--claude)', group: 'claude' };
   if (n === 'antigravity') return { text: 'Antigravity', color: 'var(--antigravity)', group: 'antigravity' };
-  if (n.includes('kimi')) return { text: 'Kimi Code CLI', color: 'var(--kimi)', group: 'kimi' };
+  if (n === 'kimi' || n.includes('kimi-cli') || n.includes('kimi_cli'))
+    return { text: 'Kimi Code CLI', color: 'var(--kimi)', group: 'kimi' };
   if (n.includes('codex')) return { text: 'Codex (GPT)', color: 'var(--codex)', group: 'codex' };
-  if (n === 'zeroscript') return { text: 'IA web (ZeroScript)', color: 'var(--web)', group: 'web' };
-  return { text: 'IA web · ' + name, color: 'var(--web)', group: 'web' };
+  if (n === 'zeroscript') return { text: 'IA web (ZeroScript)', color: 'var(--web)', group: 'zeroscript' };
+  const exact = WEB_DEFAULTS[n];
+  return {
+    text: exact ? exact.text : raw,
+    color: exact ? exact.color : webColor(n),
+    group: n || 'web',
+  };
 }
 
 function fmtTime(ts) {
@@ -95,19 +121,46 @@ function fmtTime(ts) {
   return d.toLocaleString('es', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-// Agentes CLI/escritorio: solo aparecen mientras estén conectados (lo detecta el servidor).
+// Agentes CLI/escritorio conocidos + IAs web detectadas con el nombre de su página web.
 const AGENTS = [['opencode', 'OpenCode'], ['claude', 'Claude Desktop'], ['antigravity', 'Antigravity'],
                 ['kimi', 'Kimi Code CLI'], ['codex', 'Codex (GPT)']];
 let connected = null;   // null = el servidor aún no sabe -> se muestran todos
 let tabsKey = '';
 
-function isConnected(id) { return connected === null || connected.includes(id); }
+function isConnected(id) {
+  if (connected === null) return AGENTS.some(a => a[0] === id);
+  const low = String(id || '').toLowerCase();
+  return connected.some(c => String(c || '').toLowerCase() === low || who(c).group === low);
+}
 
 function visibleTabs() {
   const tabs = [['todos', 'Todos'], ['tu', 'Tú']];
-  for (const [id, label] of AGENTS) if (isConnected(id)) tabs.push([id, label]);
-  // "IA web" no se puede detectar como conectada: solo sale si hay mensajes de ese tipo.
-  if (all.some(m => who(m.from).group === 'web' || who(m.to).group === 'web')) tabs.push(['web', 'IA web']);
+  const added = new Set(['todos', 'tu']);
+  for (const [id, label] of AGENTS) {
+    if (isConnected(id)) {
+      tabs.push([id, label]);
+      added.add(id);
+    }
+  }
+  if (Array.isArray(connected)) {
+    for (const c of connected) {
+      const w = who(c);
+      if (w.group && !added.has(w.group)) {
+        tabs.push([w.group, w.text]);
+        added.add(w.group);
+      }
+    }
+  }
+  for (const m of all) {
+    for (const side of [m.from, m.to]) {
+      const w = who(side);
+      if (w.group && w.group !== 'otros' && !added.has(w.group)) {
+        if (AGENTS.some(a => a[0] === w.group) && !isConnected(w.group)) continue;
+        tabs.push([w.group, w.text]);
+        added.add(w.group);
+      }
+    }
+  }
   return tabs;
 }
 
@@ -122,7 +175,7 @@ function renderTabs() {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'tab' + (filter === id ? ' active' : '');
-    const isAgent = AGENTS.some(a => a[0] === id);
+    const isAgent = id !== 'todos' && id !== 'tu' && isConnected(id);
     b.textContent = (isAgent && connected !== null ? '● ' : '') + label;
     if (isAgent && connected !== null) b.title = 'Conectado';
     b.onclick = () => { filter = id; lastKey = ''; tabsKey = ''; renderTabs(); render(); };
@@ -179,20 +232,29 @@ function render() {
 let toTouched = false;
 toEl.addEventListener('input', () => { toTouched = true; });
 
-// Destinatarios: solo los agentes conectados (con el nombre real con que escriben, si ya han escrito).
+// Destinatarios: agentes de escritorio e IAs web conectadas (con el nombre real de su página web).
 function updateAgents() {
   const seen = new Set();
   for (const m of all) { seen.add(m.from); seen.add(m.to); }
   seen.delete(USER);
   const names = [];
+  const pushUnique = (val) => {
+    if (!val || String(val).toLowerCase() === USER.toLowerCase()) return;
+    const low = String(val).toLowerCase();
+    if (!names.some(x => String(x).toLowerCase() === low)) names.push(val);
+  };
   if (connected === null) {
-    for (const [id] of AGENTS) names.push(id);
-    for (const n of seen) if (!names.includes(n)) names.push(n);
+    for (const [id] of AGENTS) pushUnique(id);
+    for (const n of seen) pushUnique(n);
   } else {
-    for (const [id] of AGENTS) {
-      if (!connected.includes(id)) continue;
-      const real = [...seen].find(n => who(n).group === id);
-      names.push(real || id);
+    for (const c of connected) {
+      const w = who(c);
+      const real = [...seen].find(n => who(n).group === w.group);
+      pushUnique(c || real);
+    }
+    for (const n of seen) {
+      const g = who(n).group;
+      if (!AGENTS.some(a => a[0] === g)) pushUnique(n);
     }
   }
   const key = names.join('|');
@@ -213,8 +275,9 @@ async function refresh() {
     USER = data.user || USER;
     all = data.messages || [];
     connected = Array.isArray(data.connected) ? data.connected : null;
+    const connLabels = (connected || []).map(c => who(c).text);
     const labels = connected === null ? '' :
-      ' · conectados: ' + (connected.length ? AGENTS.filter(a => connected.includes(a[0])).map(a => a[1]).join(', ') : 'ninguno');
+      ' · conectados: ' + (connLabels.length ? connLabels.join(', ') : 'ninguno');
     statusEl.textContent = all.length + ' mensajes' + labels + ' · ' + new Date().toLocaleTimeString('es');
     updateAgents();
     renderTabs();

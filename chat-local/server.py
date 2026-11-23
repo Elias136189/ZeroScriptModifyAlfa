@@ -6,8 +6,9 @@ Lee los mensajes JSON del mismo buzon que usan msg_send / msg_inbox / msg_reply
 y deja escribir mensajes nuevos como "usuario". Solo escucha en 127.0.0.1.
 
 La deteccion de agentes conectados es perezosa: solo se ejecuta cuando la
-pagina pide /api/messages, como maximo cada 30 s. Asi no queda un PowerShell
-corriendo para siempre cuando nadie mira el chat.
+pagina pide /api/messages, como maximo cada SCAN_EVERY_S segundos (15 s por
+defecto). Asi no queda un PowerShell corriendo para siempre cuando nadie mira
+el chat.
 """
 from __future__ import annotations
 
@@ -39,7 +40,7 @@ MAX_CONTENT_LENGTH = 1_000_000
 MAX_BODY_CHARS = 20_000
 MAX_SUBJECT_CHARS = 200
 MAX_HOPS = 6
-SCAN_EVERY_S = max(5, int(os.environ.get("CHAT_LOCAL_SCAN_SECONDS", "30") or "30"))
+SCAN_EVERY_S = max(5, int(os.environ.get("CHAT_LOCAL_SCAN_SECONDS", "15") or "15"))
 
 PORT = int(os.environ.get("CHAT_LOCAL_PORT", str(DEFAULT_PORT)) or DEFAULT_PORT)
 MAILBOX = mailbox_store.resolve_mailbox_dir(None, base_dir=ROOT)
@@ -79,19 +80,36 @@ def list_processes():
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=20, **kwargs,
     )
-    data = json.loads(out.stdout)
+    if out.returncode != 0:
+        detail = (out.stderr or "").strip().splitlines()
+        msg = detail[0] if detail else f"exit code {out.returncode}"
+        raise RuntimeError(f"powershell Win32_Process fallo: {msg}")
+    raw = (out.stdout or "").strip()
+    if not raw:
+        return []
+    data = json.loads(raw)
     return data if isinstance(data, list) else [data]
+
+
+_AGENT_FLAG_RE = re.compile(r"(?:^|\s)--agent(?:=|\s+)\"?([A-Za-z0-9_.-]+)\"?")
 
 
 def detect_connected() -> list[str]:
     rows = list_processes()
     by_pid = {row.get("ProcessId"): row for row in rows}
-    found: set[str] = set()
+    found: dict[str, str] = {}
     for row in rows:
-        cmd = (row.get("CommandLine") or "").lower()
+        raw_cmd = str(row.get("CommandLine") or "")
+        cmd = raw_cmd.lower()
         name = (row.get("Name") or "").lower()
         if "pc_agent_mcp" not in cmd or not name.startswith("python"):
             continue
+        m = _AGENT_FLAG_RE.search(raw_cmd)
+        if m:
+            ag = mailbox_store.clean_agent_name(m.group(1), "")
+            if ag and ag.casefold() != "zeroscript":
+                found[ag.casefold()] = ag
+                continue
         current = by_pid.get(row.get("ParentProcessId"))
         for _ in range(MAX_DEPTH):
             if not current:
@@ -100,15 +118,15 @@ def detect_connected() -> list[str]:
             if name in STOP_AT:
                 break
             if name == "claude.exe":
-                found.add("claude")
+                found["claude"] = "claude"
                 break
             text = name + " " + (current.get("CommandLine") or "").lower()
             hit = next((key for key, patterns in RULES if any(p in text for p in patterns)), None)
             if hit:
-                found.add(hit)
+                found[hit.casefold()] = hit
                 break
             current = by_pid.get(current.get("ParentProcessId"))
-    return sorted(found)
+    return [found[k] for k in sorted(found)]
 
 
 def _scan_once() -> None:
@@ -118,15 +136,16 @@ def _scan_once() -> None:
     except Exception as exc:
         log(f"no se pudo detectar agentes conectados: {exc}")
         result = None
-    with _connected_lock:
-        CONNECTED = result
+    if result is not None:
+        with _connected_lock:
+            CONNECTED = result
     with _scan_lock:
         _last_scan = time.monotonic()
         _scanning = False
 
 
 def request_scan() -> None:
-    """Lanza una deteccion en segundo plano, como mucho cada 30 s."""
+    """Lanza una deteccion en segundo plano, como mucho cada SCAN_EVERY_S s."""
     global _scanning
     with _scan_lock:
         if _scanning or (time.monotonic() - _last_scan) < SCAN_EVERY_S:

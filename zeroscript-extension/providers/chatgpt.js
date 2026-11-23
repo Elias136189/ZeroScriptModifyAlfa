@@ -976,3 +976,7 @@ const ZSProvider = (() => {
     sendCharBudget: SEND_HARD_CAP - 4000,
   };
 })();
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = ZSProvider;
+}

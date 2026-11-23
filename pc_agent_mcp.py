@@ -51,6 +51,7 @@
 # ──────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
+import concurrent.futures
 import fnmatch
 import glob as glob_module
 import json
@@ -62,6 +63,7 @@ import string
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -429,9 +431,18 @@ def load_config() -> dict[str, Any]:
         cfg["mailbox_dir"] = env_mailbox
     # Identity used as "from" by msg_send/msg_reply and as "to" by msg_inbox.
     # Each client sets its own name so one shared mailbox can serve several AIs.
-    cfg["agent_name"] = (
-        os.environ.get("ZS_PC_AGENT_NAME", "").strip() or DEFAULT_AGENT_NAME
+    cfg["agent_name"] = mailbox_store.clean_agent_name(
+        os.environ.get("ZS_PC_AGENT_NAME", "").strip() or DEFAULT_AGENT_NAME,
+        DEFAULT_AGENT_NAME,
     )
+    raw_aliases = os.environ.get("ZS_PC_AGENT_ALIASES", "").strip()
+    aliases: set[str] = set()
+    if raw_aliases:
+        for item in raw_aliases.split(","):
+            cl = mailbox_store.clean_agent_name(item, "")
+            if cl:
+                aliases.add(cl.casefold())
+    cfg["agent_aliases"] = aliases
     raw_workspace = str(cfg.get("workspace") or "").strip()
     if raw_workspace:
         raw_workspace = os.path.expandvars(os.path.expanduser(raw_workspace))
@@ -813,6 +824,7 @@ def tool_system_info() -> str:
         "release": platform.release(),
         "machine": platform.machine(),
         "python": sys.version.split()[0],
+        "agent": CFG["agent_name"],
         "user": os.environ.get("USERNAME") or os.environ.get("USER") or "",
         "home": str(Path.home()),
         "workspace": str(CFG["workspace"]),
@@ -1349,13 +1361,16 @@ def _resolve_alias(args: dict[str, Any], key: str = "as") -> str:
     """Nombre de buzon para esta llamada; 'as' permite varias IAs web.
 
     No es autenticacion: cualquiera que pueda llamar a la herramienta puede
-    elegir una etiqueta. Sirve para que dos chats web que comparten un mismo
-    proceso MCP no se pisen la bandeja.
+    elegir una etiqueta. Si el proceso ya tiene un nombre dedicado (por ejemplo
+    el nombre de la IA tomado de la pagina web), ignora el alias generico 'zeroscript'.
     """
     raw = args.get(key)
     if raw is None or not str(raw).strip():
         return CFG["agent_name"]
-    return mailbox_store.clean_agent_name(raw, CFG["agent_name"])
+    cleaned = mailbox_store.clean_agent_name(raw, CFG["agent_name"])
+    if cleaned.casefold() in ("zeroscript", "web", "pc") and str(CFG["agent_name"]).casefold() != "zeroscript":
+        return CFG["agent_name"]
+    return cleaned
 
 
 def _check_hops(next_hops: int) -> None:
@@ -1402,6 +1417,10 @@ def _hops_for(reply_id: str) -> int:
     return previous + 1
 
 
+_SEND_LOCK = threading.Lock()
+_MAILBOX_LOCK = threading.RLock()
+
+
 def _create_message(
     *,
     to: str,
@@ -1412,17 +1431,18 @@ def _create_message(
     sender: str | None = None,
 ) -> tuple[str, Path, dict[str, Any]]:
     identity = mailbox_store.clean_agent_name(sender or CFG["agent_name"], CFG["agent_name"])
-    _check_send_rate(identity)
-    return mailbox_store.create_message(
-        CFG["mailbox_dir"],
-        sender=identity,
-        to=to,
-        body=body,
-        subject=subject,
-        reply_to=reply_to,
-        hops=hops,
-        max_body=CFG["max_message_chars"],
-    )
+    with _MAILBOX_LOCK:
+        _check_send_rate(identity)
+        return mailbox_store.create_message(
+            CFG["mailbox_dir"],
+            sender=identity,
+            to=to,
+            body=body,
+            subject=subject,
+            reply_to=reply_to,
+            hops=hops,
+            max_body=CFG["max_message_chars"],
+        )
 
 
 
@@ -1485,47 +1505,77 @@ def tool_msg_inbox(args: dict[str, Any]) -> str:
         limit = 20
     agent = _resolve_alias(args)
     wanted = agent.casefold()
-    selected: list[tuple[Path, dict[str, Any]]] = []
-    for path, message in _iter_mailbox_messages():
-        if str(message.get("to") or "").strip().casefold() != wanted:
-            continue
-        if not include_read and bool(message.get("read", False)):
-            continue
-        selected.append((path, message))
-        if len(selected) >= limit:
-            break
-    if not selected:
-        return "Sin mensajes nuevos."
+    wanted_set = {wanted}
+    if wanted == str(CFG["agent_name"]).casefold():
+        for alias in CFG.get("agent_aliases") or ():
+            if alias:
+                wanted_set.add(str(alias).casefold())
+    with _MAILBOX_LOCK:
+        selected: list[tuple[Path, dict[str, Any]]] = []
+        for path, message in _iter_mailbox_messages():
+            if str(message.get("to") or "").strip().casefold() not in wanted_set:
+                continue
+            if not include_read and bool(message.get("read", False)):
+                continue
+            selected.append((path, message))
+            if len(selected) >= limit:
+                break
+        if not selected:
+            return "Sin mensajes nuevos."
 
-    # Cada cuerpo se recorta a un presupuesto por mensaje. Si el bloque total
-    # sigue siendo grande se reduce ese presupuesto o se devuelven menos
-    # mensajes, pero nunca se marca como leido algo que no se mostro.
-    max_chars = CFG["max_output_chars"]
-    body_limit = min(CFG["max_message_chars"], 4000)
-    while True:
-        text, returned = _render_inbox(agent, selected, body_limit)
-        if len(text) <= max_chars:
+        # Cada cuerpo se recorta a un presupuesto por mensaje. Si el bloque total
+        # sigue siendo grande se reduce ese presupuesto o se devuelven menos
+        # mensajes, pero nunca se marca como leido algo que no se mostro.
+        max_chars = CFG["max_output_chars"]
+        body_limit = min(CFG["max_message_chars"], 4000)
+        while True:
+            text, returned = _render_inbox(agent, selected, body_limit)
+            if len(text) <= max_chars:
+                break
+            if body_limit > 120:
+                body_limit = max(120, body_limit * 3 // 4)
+                continue
+            if len(selected) > 1:
+                selected = selected[:-1]
+                continue
+            # Un solo mensaje: recorta el cuerpo a cero y conserva los metadatos.
+            text, returned = _render_inbox(agent, selected, 0)
+            if len(text) > max_chars:
+                text = json.dumps(returned, ensure_ascii=False, indent=2)[:max_chars]
             break
-        if body_limit > 120:
-            body_limit = max(120, body_limit * 3 // 4)
-            continue
-        if len(selected) > 1:
-            selected = selected[:-1]
-            continue
-        # Un solo mensaje: recorta el cuerpo a cero y conserva los metadatos.
-        text, returned = _render_inbox(agent, selected, 0)
-        if len(text) > max_chars:
-            text = json.dumps(returned, ensure_ascii=False, indent=2)[:max_chars]
-        break
 
-    for (path, message), item in zip(selected, returned):
-        if not bool(message.get("read", False)):
-            try:
-                mailbox_store.mark_read(path, message)
-            except Exception as exc:
-                log(f"mailbox: could not mark {path.name} read: {exc}")
-        item["read"] = True
-    return text
+        for (path, message), item in zip(selected, returned):
+            if not bool(message.get("read", False)):
+                try:
+                    mailbox_store.mark_read(path, message)
+                except Exception as exc:
+                    log(f"mailbox: could not mark {path.name} read: {exc}")
+            item["read"] = True
+        return text
+
+
+def _mailbox_dir_signature() -> tuple[tuple[str, int, int], ...]:
+    """Firma rapida del directorio del buzon sin leer ni parsear JSONs."""
+    root = CFG["mailbox_dir"]
+    if not root.is_dir():
+        return ()
+    entries: list[tuple[str, int, int]] = []
+    try:
+        with os.scandir(root) as scan:
+            for entry in scan:
+                if entry.name.startswith(".") or not entry.name.lower().endswith(".json"):
+                    continue
+                try:
+                    if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                    entries.append((entry.name, st.st_mtime_ns, st.st_size))
+                except OSError:
+                    continue
+    except OSError:
+        return ()
+    entries.sort()
+    return tuple(entries)
 
 
 def tool_msg_wait(args: dict[str, Any]) -> str:
@@ -1535,22 +1585,24 @@ def tool_msg_wait(args: dict[str, Any]) -> str:
     except Exception:
         seconds = 25
     agent = _resolve_alias(args)
-    wanted = agent.casefold()
+    limit = args.get("limit", 20)
     deadline = time.monotonic() + seconds
+    last_sig: tuple[tuple[str, int, int], ...] | None = None
     while True:
-        for path, message in _iter_mailbox_messages():
-            if str(message.get("to") or "").strip().casefold() != wanted:
-                continue
-            if bool(message.get("read", False)):
-                continue
-            return tool_msg_inbox({
+        sig = _mailbox_dir_signature()
+        if sig != last_sig:
+            last_sig = sig
+            inbox_out = tool_msg_inbox({
                 "as": agent,
                 "include_read": False,
-                "limit": args.get("limit", 20),
+                "limit": limit,
             })
-        if time.monotonic() >= deadline:
+            if inbox_out != "Sin mensajes nuevos.":
+                return inbox_out
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             return "Sin mensajes nuevos."
-        time.sleep(0.5)
+        time.sleep(min(0.5, remaining))
 
 
 def tool_msg_reply(args: dict[str, Any]) -> str:
@@ -1644,8 +1696,10 @@ def dispatch_tool(name: str, args: dict[str, Any]) -> str:
 
 
 def send(payload: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(payload, ensure_ascii=False) + "\n"
+    with _SEND_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 CONFIG_STYLES = ("generic", "claude", "antigravity", "opencode")
@@ -1767,8 +1821,10 @@ def check_setup() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     cli_args = list(sys.argv[1:] if argv is None else argv)
-    if cli_args:
-        command = cli_args[0].lower()
+    idx = 0
+    while idx < len(cli_args):
+        arg = cli_args[idx]
+        command = arg.lower()
         if command in ("--version", "-v"):
             print(f"ZeroScript PC agent {SERVER_VERSION}")
             return 0
@@ -1778,7 +1834,7 @@ def main(argv: list[str] | None = None) -> int:
         if command == "--check":
             return check_setup()
         if command == "--print-config":
-            style = cli_args[1].lower() if len(cli_args) > 1 else "generic"
+            style = cli_args[idx + 1].lower() if idx + 1 < len(cli_args) else "generic"
             if style not in CONFIG_STYLES:
                 print(
                     f"unknown config style '{style}'; choose one of: "
@@ -1788,85 +1844,131 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(json.dumps(config_snippet(style), indent=2, ensure_ascii=False))
             return 0
-        print(f"unknown argument: {cli_args[0]} (try --help)", file=sys.stderr)
+        if command == "--agent" and idx + 1 < len(cli_args):
+            cleaned = mailbox_store.clean_agent_name(cli_args[idx + 1], "")
+            if cleaned:
+                CFG["agent_name"] = cleaned
+            idx += 2
+            continue
+        if command.startswith("--agent="):
+            cleaned = mailbox_store.clean_agent_name(arg.split("=", 1)[1], "")
+            if cleaned:
+                CFG["agent_name"] = cleaned
+            idx += 1
+            continue
+        if command == "--alias" and idx + 1 < len(cli_args):
+            cleaned = mailbox_store.clean_agent_name(cli_args[idx + 1], "")
+            if cleaned:
+                CFG.setdefault("agent_aliases", set()).add(cleaned.casefold())
+            idx += 2
+            continue
+        if command.startswith("--alias="):
+            cleaned = mailbox_store.clean_agent_name(arg.split("=", 1)[1], "")
+            if cleaned:
+                CFG.setdefault("agent_aliases", set()).add(cleaned.casefold())
+            idx += 1
+            continue
+        print(f"unknown argument: {arg} (try --help)", file=sys.stderr)
         return 2
 
     log(f"v{SERVER_VERSION} workspace={CFG['workspace']} shell={CFG['allow_shell']} "
         f"write={CFG['allow_write']} outside={CFG['allow_outside_workspace']} "
         f"agent={CFG['agent_name']} mailbox={CFG['mailbox_dir']}")
-    for raw_line in sys.stdin:
-        line = raw_line.strip()
-        if not line:
-            continue
+
+    def _run_tool_call(req_id: Any, tool_name: str, tool_args: dict[str, Any]) -> None:
         try:
-            message = json.loads(line)
-        except Exception:
-            log("ignored a non-JSON line on stdin")
-            continue
-        if not isinstance(message, dict):
-            continue
-        method = message.get("method")
-        request_id = message.get("id")
-        if request_id is None:
-            # Notification (e.g. notifications/initialized) - nothing to answer.
-            continue
-        try:
-            if method == "initialize":
-                params = message.get("params")
-                if not isinstance(params, dict):
-                    params = {}
-                client = params.get("clientInfo")
-                if not isinstance(client, dict):
-                    client = {}
-                client_name = str(client.get("name") or "unknown")
-                client_version = str(client.get("version") or "")
-                requested = str(params.get("protocolVersion") or "")
-                protocol = (
-                    requested
-                    if requested in SUPPORTED_PROTOCOL_VERSIONS
-                    else "2024-11-05"
-                )
-                log(
-                    f"initialize client={client_name} {client_version} "
-                    f"requested={requested or '-'} -> {protocol}"
-                )
-                result: dict[str, Any] = {
-                    "protocolVersion": protocol,
-                    "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {
-                        "name": "zeroscript-pc",
-                        "title": "ZeroScript PC Agent",
-                        "version": SERVER_VERSION,
-                    },
-                    "instructions": INSTRUCTIONS,
-                }
-            elif method == "tools/list":
-                result = {"tools": TOOLS}
-            elif method == "tools/call":
-                params = message.get("params") or {}
-                name = params.get("name") or ""
-                args = params.get("arguments") or {}
-                text = dispatch_tool(str(name), args if isinstance(args, dict) else {})
-                result = {
+            text = dispatch_tool(tool_name, tool_args)
+            send({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
                     "content": [{"type": "text", "text": text}],
                     "isError": text.startswith("ERROR:"),
-                }
-            elif method == "ping":
-                result = {}
-            else:
-                send({
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {"code": -32601, "message": f"method not found: {method}"},
-                })
-                continue
-            send({"jsonrpc": "2.0", "id": request_id, "result": result})
+                },
+            })
         except Exception as exc:
             send({
                 "jsonrpc": "2.0",
-                "id": request_id,
+                "id": req_id,
                 "error": {"code": -32603, "message": f"{type(exc).__name__}: {exc}"},
             })
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="mcp-tool") as executor:
+        for raw_line in sys.stdin:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except Exception:
+                log("ignored a non-JSON line on stdin")
+                continue
+            if not isinstance(message, dict):
+                continue
+            method = message.get("method")
+            request_id = message.get("id")
+            if request_id is None:
+                # Notification (e.g. notifications/initialized) - nothing to answer.
+                continue
+            try:
+                if method == "initialize":
+                    params = message.get("params")
+                    if not isinstance(params, dict):
+                        params = {}
+                    client = params.get("clientInfo")
+                    if not isinstance(client, dict):
+                        client = {}
+                    client_name = str(client.get("name") or "unknown")
+                    client_version = str(client.get("version") or "")
+                    requested = str(params.get("protocolVersion") or "")
+                    protocol = (
+                        requested
+                        if requested in SUPPORTED_PROTOCOL_VERSIONS
+                        else "2024-11-05"
+                    )
+                    log(
+                        f"initialize client={client_name} {client_version} "
+                        f"requested={requested or '-'} -> {protocol}"
+                    )
+                    result: dict[str, Any] = {
+                        "protocolVersion": protocol,
+                        "capabilities": {"tools": {"listChanged": False}},
+                        "serverInfo": {
+                            "name": "zeroscript-pc",
+                            "title": "ZeroScript PC Agent",
+                            "version": SERVER_VERSION,
+                        },
+                        "instructions": INSTRUCTIONS,
+                    }
+                elif method == "tools/list":
+                    result = {"tools": TOOLS}
+                elif method == "tools/call":
+                    params = message.get("params") or {}
+                    name = params.get("name") or ""
+                    args = params.get("arguments") or {}
+                    executor.submit(
+                        _run_tool_call,
+                        request_id,
+                        str(name),
+                        args if isinstance(args, dict) else {},
+                    )
+                    continue
+                elif method == "ping":
+                    result = {}
+                else:
+                    send({
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {"code": -32601, "message": f"method not found: {method}"},
+                    })
+                    continue
+                send({"jsonrpc": "2.0", "id": request_id, "result": result})
+            except Exception as exc:
+                send({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32603, "message": f"{type(exc).__name__}: {exc}"},
+                })
     return 0
 
 
