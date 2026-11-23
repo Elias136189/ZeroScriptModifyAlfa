@@ -158,7 +158,7 @@ def iter_messages(
         try:
             if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
                 continue
-            if not entry.name.lower().endswith(".json") or entry.name.startswith(".msg-"):
+            if not entry.name.lower().endswith(".json") or entry.name.startswith("."):
                 continue
             path = Path(entry.path)
             if path.parent.resolve() != root_resolved:

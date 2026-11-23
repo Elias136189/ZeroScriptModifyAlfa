@@ -647,6 +647,31 @@ def release_lock(path: Path) -> None:
         pass
 
 
+def _window_wake_lock_path(mailbox_root: Path, target: str) -> Path:
+    slug = mailbox_store.safe_filename_part(str(target or "").strip().casefold(), "agent", 32)
+    return Path(mailbox_root) / f".wake_lock_{slug}.lock"
+
+
+def set_window_wake_lock(mailbox_root: Path, target: str, message_id: Any, ttl_seconds: float) -> Path:
+    lock_file = _window_wake_lock_path(mailbox_root, target)
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "target": str(target or "").strip().casefold(),
+        "message_id": str(message_id or ""),
+        "expires_at": time.time() + max(15.0, float(ttl_seconds or 90.0)),
+    }
+    mailbox_store.atomic_write_json(lock_file, payload)
+    return lock_file
+
+
+def clear_window_wake_lock(mailbox_root: Path, target: str) -> None:
+    lock_file = _window_wake_lock_path(mailbox_root, target)
+    try:
+        lock_file.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _run_command(argv: list[str], timeout: float, env: dict[str, str] | None = None) -> tuple[int, str, str]:
     """Ejecuta un CLI sin consola, sin stdin y con registro para poder matarlo."""
     creationflags = 0
@@ -950,10 +975,18 @@ def process_target(
         detail = ""
         ok = False
         for candidate_method in chain:
+            if candidate_method == "window":
+                lock_ttl = float(cfg.get("window_reply_timeout_seconds") or 90) + 15.0
+                try:
+                    set_window_wake_lock(root, target, message.get("id"), lock_ttl)
+                except OSError:
+                    pass
             ok, detail = _wake_with(candidate_method, cfg, prompt)
             if ok:
                 used = candidate_method
                 break
+            if candidate_method == "window":
+                clear_window_wake_lock(root, target)
             errors.append(f"{candidate_method}: {detail}")
             if not quiet:
                 log_fn(f"destino={target} metodo={candidate_method} fallo: {detail}")
@@ -975,23 +1008,26 @@ def process_target(
         # llegue a usar el buzón (permisos pendientes, ventana ocupada...). Se
         # espera la respuesta para no marcar como despertado algo que no lo fue.
         if ok and used == "window" and config.get("require_reply", True):
-            timeout = float(cfg.get("window_reply_timeout_seconds") or 90)
-            deadline = time.time() + timeout
-            while True:
-                if message_has_reply(root, message.get("id")):
-                    break
-                if time.time() >= deadline:
-                    break
-                time.sleep(2)
-            if not message_has_reply(root, message.get("id")):
-                detail = (
-                    f"{used}: la ventana acepto el aviso pero no hay respuesta al "
-                    f"mensaje tras {int(timeout)} s; revisa los permisos del cliente "
-                    "(msg_inbox/msg_reply) y que la ventana siga disponible"
-                )
-                errors.append(detail)
-                ok = False
-                used = ""
+            try:
+                timeout = float(cfg.get("window_reply_timeout_seconds") or 90)
+                deadline = time.time() + timeout
+                while True:
+                    if message_has_reply(root, message.get("id")):
+                        break
+                    if time.time() >= deadline:
+                        break
+                    time.sleep(2)
+                if not message_has_reply(root, message.get("id")):
+                    detail = (
+                        f"{used}: la ventana acepto el aviso pero no hay respuesta al "
+                        f"mensaje tras {int(timeout)} s; revisa los permisos del cliente "
+                        "(msg_inbox/msg_reply) y que la ventana siga disponible"
+                    )
+                    errors.append(detail)
+                    ok = False
+                    used = ""
+            finally:
+                clear_window_wake_lock(root, target)
 
         if not ok:
             joined = " | ".join(errors)

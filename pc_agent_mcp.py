@@ -52,8 +52,10 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import fnmatch
 import glob as glob_module
+import hashlib
 import json
 import os
 import platform
@@ -565,9 +567,18 @@ def build_instructions() -> str:
         f"Reply chains are limited to {CFG['max_hops']} hops and each agent can "
         f"send at most {CFG['max_msgs_per_10min']} messages per 10 minutes. "
         "If a limit is reached, stop and let the user decide the next step.",
+        "Shared task state: if ESTADO_TAREA.md exists in the workspace (updated "
+        "within 48h), pc_system_info includes it automatically. Keep ESTADO_TAREA.md "
+        "updated with: ## Objetivo, ## Decisiones, ## En curso / Responsable, ## Pendientes.",
+        "Horizontal mailbox protocol (no chief agent): (1) prefix technical subjects "
+        "with [PROPUESTA], [AUDITORIA], [EJECUCION] or [BLOQUEO]; (2) anti-echo rule: "
+        "never confirm or praise another AI's code claim without verifying the real "
+        "file/line via pc_read or pc_grep and citing file:line; (3) no courtesy messages: "
+        "do not send messages just to say 'agreed' or 'looks good'.",
         "msg_wait(seconds<=55) waits for a new message and returns exactly "
-        '"Sin mensajes nuevos." on timeout. The optional "as" field is only a '
-        "mailbox label for two AIs that share one process; it is not authentication.",
+        '"Sin mensajes nuevos." on timeout. The optional "as" field cannot be '
+        "used to read or impersonate a different agent when this process has its "
+        "own identity.",
         'If msg_inbox returns exactly "Sin mensajes nuevos.", there are no new '
         "messages: stay silent, do not invent a conversation and do not send "
         "a message just to fill the silence. When another agent asks you to "
@@ -837,6 +848,20 @@ def tool_system_info() -> str:
         "drives": drives,
         "workspace_top_level": top_level,
     }
+    task_block = ""
+    try:
+        task_state_path = CFG["workspace"] / "ESTADO_TAREA.md"
+        if task_state_path.is_file():
+            age_s = time.time() - task_state_path.stat().st_mtime
+            if age_s <= 48 * 3600:
+                task_text = read_text_file(task_state_path).strip()
+                if task_text:
+                    if len(task_text) > 2500:
+                        task_text = task_text[:2500] + "\n... [truncado]"
+                    info["task_state_file"] = "ESTADO_TAREA.md"
+                    task_block = "\n\nEstado de tarea activa (ESTADO_TAREA.md):\n" + task_text
+    except Exception as exc:
+        log(f"task state unavailable: {exc}")
     recent_block = ""
     if vigilante_cambios is not None and _workspace_can_see_watcher():
         try:
@@ -845,7 +870,7 @@ def tool_system_info() -> str:
             recent_block = "\n\n" + recent_text
         except Exception as exc:
             log(f"change watcher context unavailable: {exc}")
-    return truncate("PC environment:\n" + json.dumps(info, indent=2, ensure_ascii=False) + recent_block)
+    return truncate("PC environment:\n" + json.dumps(info, indent=2, ensure_ascii=False) + task_block + recent_block)
 
 
 def tool_list(args: dict[str, Any]) -> str:
@@ -878,10 +903,198 @@ def tool_list(args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_FILE_READ_STATE_LOCK = threading.Lock()
+_FILE_READ_STATE: dict[str, tuple[int, int, str]] = {}
+
+
+def _file_fingerprint(path: Path) -> tuple[int, int, str]:
+    st = path.stat()
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return (st.st_mtime_ns, st.st_size, digest)
+
+
+def _record_file_read(path: Path) -> str:
+    try:
+        key = str(path.resolve())
+        fp = _file_fingerprint(path)
+    except OSError:
+        return ""
+    with _FILE_READ_STATE_LOCK:
+        if len(_FILE_READ_STATE) >= 500 and key not in _FILE_READ_STATE:
+            _FILE_READ_STATE.pop(next(iter(_FILE_READ_STATE)))
+        _FILE_READ_STATE[key] = fp
+    return fp[2][:8]
+
+
+def _recent_other_agent_for_file(path: Path, max_age_s: float = 600.0) -> str:
+    if vigilante_cambios is None or not hasattr(vigilante_cambios, "ATTRIBUTION_JSONL"):
+        return ""
+    attr_file = vigilante_cambios.ATTRIBUTION_JSONL
+    if not attr_file.is_file():
+        return ""
+    try:
+        target = vigilante_cambios.rel_path(path).replace("\\", "/")
+        lines = attr_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return ""
+    now_ts = time.time()
+    own_low = str(CFG["agent_name"] or "").strip().casefold()
+    for raw in reversed(lines[-80:]):
+        if not raw.strip():
+            continue
+        try:
+            item = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(item, dict):
+            continue
+        ts = float(item.get("ts") or 0.0)
+        if now_ts - ts > max_age_s:
+            break
+        if str(item.get("path") or "").replace("\\", "/") != target:
+            continue
+        other = str(item.get("agent") or "").strip()
+        if other and other.casefold() != own_low:
+            return other
+    return ""
+
+
+def _verify_optimistic_concurrency(path: Path, tool_name: str) -> None:
+    if not path.exists() or not path.is_file():
+        return
+    try:
+        key = str(path.resolve())
+    except OSError:
+        key = str(path.absolute())
+    with _FILE_READ_STATE_LOCK:
+        prev = _FILE_READ_STATE.get(key)
+    if prev is not None:
+        try:
+            cur = _file_fingerprint(path)
+        except OSError:
+            return
+        if cur[2] != prev[2]:
+            raise ValueError(
+                f"Colision de concurrencia detectada en {display_path(path)}: el archivo fue "
+                f"modificado en disco por otro proceso o IA despues de tu ultima lectura. "
+                f"Vuelve a leerlo con pc_read antes de usar {tool_name}."
+            )
+    else:
+        other = _recent_other_agent_for_file(path, max_age_s=600.0)
+        if other:
+            raise ValueError(
+                f"Colision de concurrencia detectada en {display_path(path)}: '{other}' modifico "
+                f"este archivo recientemente y aun no lo has leido con pc_read. "
+                f"Leelo primero con pc_read antes de usar {tool_name}."
+            )
+
+
+@contextlib.contextmanager
+def _file_mutation_lock(path: Path, timeout_s: float = 10.0):
+    lock_path = path.parent / f".{path.name}.zs.lock"
+    deadline = time.monotonic() + timeout_s
+    acquired = False
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                with os.fdopen(fd, "w", encoding="ascii") as handle:
+                    handle.write(f"{os.getpid()} {time.time()}")
+            except Exception:
+                pass
+            acquired = True
+            break
+        except FileExistsError:
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+            except OSError:
+                age = 0.0
+            if age > 30.0:
+                try:
+                    lock_path.unlink(missing_ok=True)
+                    continue
+                except OSError:
+                    pass
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Archivo ocupado por otra IA ({display_path(path)}); reintenta en unos segundos."
+                )
+            time.sleep(0.05)
+        except OSError:
+            break
+    try:
+        yield
+    finally:
+        if acquired:
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _wake_lock_paths_for_current_agent() -> list[Path]:
+    root = CFG["mailbox_dir"]
+    names: set[str] = set()
+    own = str(CFG["agent_name"] or "").strip().casefold()
+    if own:
+        names.add(own)
+    for al in CFG.get("agent_aliases") or ():
+        s = str(al or "").strip().casefold()
+        if s:
+            names.add(s)
+    return [root / f".wake_lock_{mailbox_store.safe_filename_part(n, 'agent', 32)}.lock" for n in sorted(names)]
+
+
+def _check_wake_lock(tool_name: str) -> None:
+    now = time.time()
+    for lock_path in _wake_lock_paths_for_current_agent():
+        if not lock_path.is_file():
+            continue
+        try:
+            data = json.loads(lock_path.read_text(encoding="utf-8"))
+        except Exception:
+            try:
+                age = now - lock_path.stat().st_mtime
+            except OSError:
+                age = 9999.0
+            if age <= 120.0:
+                raise PermissionError(
+                    f"Modo despertar automatico activo: '{tool_name}' esta bloqueado por "
+                    "seguridad mientras respondes a un aviso automatico del buzon. Responde primero con msg_reply."
+                )
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            continue
+        try:
+            expires_at = float(data.get("expires_at") or 0.0)
+        except Exception:
+            expires_at = 0.0
+        if now < expires_at:
+            raise PermissionError(
+                f"Modo despertar automatico activo: '{tool_name}' esta bloqueado por "
+                "seguridad mientras respondes a un aviso automatico del buzon. Responde primero con msg_reply."
+            )
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _clear_wake_lock() -> None:
+    for lock_path in _wake_lock_paths_for_current_agent():
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def tool_read(args: dict[str, Any]) -> str:
     path = resolve_path(args.get("path"), must_exist=True)
     if not path.is_file():
         raise IsADirectoryError(f"not a file: {path}")
+    rev = _record_file_read(path)
     text = read_text_file(path)
     lines = text.splitlines()
     offset = max(1, int(args.get("offset") or 1))
@@ -889,7 +1102,8 @@ def tool_read(args: dict[str, Any]) -> str:
     start = offset - 1
     end = start + limit
     selected = lines[start:end]
-    header = f"{display_path(path)} ({len(lines)} lines, showing {len(selected)} from line {offset}):"
+    rev_tag = f" [rev: {rev}]" if rev else ""
+    header = f"{display_path(path)} ({len(lines)} lines, showing {len(selected)} from line {offset}){rev_tag}:"
     body = "\n".join(f"{number}|{line}" for number, line in enumerate(selected, start=offset))
     if not selected:
         body = "(no lines in that range)"
@@ -901,6 +1115,7 @@ def tool_write(args: dict[str, Any]) -> str:
         raise PermissionError(
             "pc_write is disabled by allow_write=false in pc_agent_config.json"
         )
+    _check_wake_lock("pc_write")
     path = resolve_path(args.get("path"), for_mutation=True, tool_name="pc_write")
     content = args.get("content")
     if not isinstance(content, str):
@@ -912,30 +1127,33 @@ def tool_write(args: dict[str, Any]) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
     elif not path.parent.exists():
         raise FileNotFoundError(f"parent directory does not exist: {path.parent}")
-    existed = path.exists()
-    prev_text: str | None = None
-    if vigilante_cambios is not None:
-        try:
-            if existed:
-                prev_text = vigilante_cambios.read_text_snapshot(path)
-            vigilante_cambios.record_mcp_attribution(path, CFG["agent_name"], tool="pc_write")
-        except Exception:
-            pass
-    data = content.encode("utf-8")
-    _atomic_write_bytes(path, data)
-    if vigilante_cambios is not None:
-        try:
-            if not vigilante_cambios.is_vigilante_running():
-                vigilante_cambios.record_mcp_change(
-                    path,
-                    agent=CFG["agent_name"],
-                    tool="pc_write",
-                    old_text=prev_text,
-                    new_text=content,
-                    existed_before=existed,
-                )
-        except Exception:
-            pass
+    with _file_mutation_lock(path):
+        _verify_optimistic_concurrency(path, "pc_write")
+        existed = path.exists()
+        prev_text: str | None = None
+        if vigilante_cambios is not None:
+            try:
+                if existed:
+                    prev_text = vigilante_cambios.read_text_snapshot(path)
+                vigilante_cambios.record_mcp_attribution(path, CFG["agent_name"], tool="pc_write")
+            except Exception:
+                pass
+        data = content.encode("utf-8")
+        _atomic_write_bytes(path, data)
+        _record_file_read(path)
+        if vigilante_cambios is not None:
+            try:
+                if not vigilante_cambios.is_vigilante_running():
+                    vigilante_cambios.record_mcp_change(
+                        path,
+                        agent=CFG["agent_name"],
+                        tool="pc_write",
+                        old_text=prev_text,
+                        new_text=content,
+                        existed_before=existed,
+                    )
+            except Exception:
+                pass
     return f"Wrote {len(data)} bytes to {display_path(path)}"
 
 
@@ -944,6 +1162,7 @@ def tool_edit(args: dict[str, Any]) -> str:
         raise PermissionError(
             "pc_edit is disabled by allow_write=false in pc_agent_config.json"
         )
+    _check_wake_lock("pc_edit")
     path = resolve_path(args.get("path"), must_exist=True, for_mutation=True, tool_name="pc_edit")
     if not path.is_file():
         raise IsADirectoryError(f"not a file: {path}")
@@ -955,56 +1174,59 @@ def tool_edit(args: dict[str, Any]) -> str:
         raise ValueError("old_string must not be empty; use pc_write to create or fully rewrite a file")
     if old == new:
         raise ValueError("old_string and new_string are identical")
-    text, encoding, had_bom = _read_text_with_meta(path)
-    # pc_read shows lines without their \r, so the model sends "\n". When the file
-    # uses CRLF, match and insert with CRLF: multi-line edits then work and the
-    # file does not end up with mixed line endings.
-    crlf = text.count("\r\n")
-    file_is_crlf = crlf > 0 and crlf >= text.count("\n") - crlf
+    with _file_mutation_lock(path):
+        _verify_optimistic_concurrency(path, "pc_edit")
+        text, encoding, had_bom = _read_text_with_meta(path)
+        # pc_read shows lines without their \r, so the model sends "\n". When the file
+        # uses CRLF, match and insert with CRLF: multi-line edits then work and the
+        # file does not end up with mixed line endings.
+        crlf = text.count("\r\n")
+        file_is_crlf = crlf > 0 and crlf >= text.count("\n") - crlf
 
-    def _to_file_eol(value: str) -> str:
-        if file_is_crlf and "\n" in value and "\r\n" not in value:
-            return value.replace("\n", "\r\n")
-        return value
+        def _to_file_eol(value: str) -> str:
+            if file_is_crlf and "\n" in value and "\r\n" not in value:
+                return value.replace("\n", "\r\n")
+            return value
 
-    count = text.count(old)
-    if count == 0 and file_is_crlf:
-        adapted = _to_file_eol(old)
-        if adapted != old:
-            count = text.count(adapted)
-            if count:
-                old = adapted
-    if count == 0:
-        raise ValueError(
-            "old_string was not found in the file. Read it with pc_read first and copy the text exactly "
-            "(including indentation)."
-        )
-    replace_all = bool(args.get("replace_all", False))
-    if count > 1 and not replace_all:
-        raise ValueError(
-            f"old_string occurs {count} times. Include more surrounding context or set replace_all=true."
-        )
-    updated = text.replace(old, _to_file_eol(new), -1 if replace_all else 1)
-    data, kept_encoding = _encode_text(updated, encoding, had_bom)
-    if vigilante_cambios is not None:
-        try:
-            vigilante_cambios.record_mcp_attribution(path, CFG["agent_name"], tool="pc_edit")
-        except Exception:
-            pass
-    _atomic_write_bytes(path, data)
-    if vigilante_cambios is not None:
-        try:
-            if not vigilante_cambios.is_vigilante_running():
-                vigilante_cambios.record_mcp_change(
-                    path,
-                    agent=CFG["agent_name"],
-                    tool="pc_edit",
-                    old_text=text,
-                    new_text=updated,
-                    existed_before=True,
-                )
-        except Exception:
-            pass
+        count = text.count(old)
+        if count == 0 and file_is_crlf:
+            adapted = _to_file_eol(old)
+            if adapted != old:
+                count = text.count(adapted)
+                if count:
+                    old = adapted
+        if count == 0:
+            raise ValueError(
+                "old_string was not found in the file. Read it with pc_read first and copy the text exactly "
+                "(including indentation)."
+            )
+        replace_all = bool(args.get("replace_all", False))
+        if count > 1 and not replace_all:
+            raise ValueError(
+                f"old_string occurs {count} times. Include more surrounding context or set replace_all=true."
+            )
+        updated = text.replace(old, _to_file_eol(new), -1 if replace_all else 1)
+        data, kept_encoding = _encode_text(updated, encoding, had_bom)
+        if vigilante_cambios is not None:
+            try:
+                vigilante_cambios.record_mcp_attribution(path, CFG["agent_name"], tool="pc_edit")
+            except Exception:
+                pass
+        _atomic_write_bytes(path, data)
+        _record_file_read(path)
+        if vigilante_cambios is not None:
+            try:
+                if not vigilante_cambios.is_vigilante_running():
+                    vigilante_cambios.record_mcp_change(
+                        path,
+                        agent=CFG["agent_name"],
+                        tool="pc_edit",
+                        old_text=text,
+                        new_text=updated,
+                        existed_before=True,
+                    )
+            except Exception:
+                pass
     note = "" if kept_encoding else " (file re-encoded as UTF-8: its original encoding cannot hold the new text)"
     return f"Edited {display_path(path)}: replaced {count if replace_all else 1} occurrence(s){note}"
 
@@ -1274,6 +1496,7 @@ def tool_shell(args: dict[str, Any]) -> str:
         raise PermissionError(
             "pc_shell is disabled by allow_shell=false in pc_agent_config.json"
         )
+    _check_wake_lock("pc_shell")
     command = args.get("command")
     if not isinstance(command, str) or not command.strip():
         raise ValueError("command is required")
@@ -1358,18 +1581,33 @@ def _iter_mailbox_messages() -> list[tuple[Path, dict[str, Any]]]:
 
 
 def _resolve_alias(args: dict[str, Any], key: str = "as") -> str:
-    """Nombre de buzon para esta llamada; 'as' permite varias IAs web.
+    """Identidad de buzon para esta llamada.
 
-    No es autenticacion: cualquiera que pueda llamar a la herramienta puede
-    elegir una etiqueta. Si el proceso ya tiene un nombre dedicado (por ejemplo
-    el nombre de la IA tomado de la pagina web), ignora el alias generico 'zeroscript'.
+    Cuando el proceso pertenece a una IA concreta (CFG['agent_name'] != 'zeroscript'),
+    fija la identidad y rechaza intentos de usar 'as' para suplantar o leer a otro agente.
     """
+    own = str(CFG["agent_name"])
+    own_low = own.casefold()
+    allowed_own = {own_low}
+    for al in CFG.get("agent_aliases") or ():
+        if al:
+            allowed_own.add(str(al).casefold())
     raw = args.get(key)
     if raw is None or not str(raw).strip():
-        return CFG["agent_name"]
-    cleaned = mailbox_store.clean_agent_name(raw, CFG["agent_name"])
-    if cleaned.casefold() in ("zeroscript", "web", "pc") and str(CFG["agent_name"]).casefold() != "zeroscript":
-        return CFG["agent_name"]
+        return own
+    cleaned = mailbox_store.clean_agent_name(raw, "")
+    if not cleaned:
+        return own
+    low = cleaned.casefold()
+    if own_low != "zeroscript":
+        if low in ("zeroscript", "web", "pc") or low in allowed_own:
+            return own
+        raise ValueError(
+            f"Identidad fija: este proceso MCP pertenece a '{own}' y no puede usar "
+            f"as='{cleaned}' para suplantar o leer a otro agente."
+        )
+    if low == "usuario":
+        raise ValueError("No puedes usar as='usuario' desde un proceso MCP de IA.")
     return cleaned
 
 
@@ -1446,23 +1684,77 @@ def _create_message(
 
 
 
+def _infer_active_thread(sender: str, to_raw: Any, window_s: float = 900.0) -> tuple[str, int]:
+    """Si ya hay conversacion activa entre sender y to sin 'reply_to', encadena hilo y hops."""
+    recipient = mailbox_store.clean_agent_name(to_raw, "")
+    sender_low = sender.casefold()
+    rec_low = recipient.casefold()
+    if not recipient or sender_low == "usuario" or rec_low == "usuario" or rec_low == "todos":
+        return "", 0
+    now = time.time()
+    last_user_ts = 0.0
+    entries = _iter_mailbox_messages()
+    for path, message in entries:
+        stamp = mailbox_store.message_timestamp(path, message)
+        if now - stamp > window_s:
+            continue
+        m_from = str(message.get("from") or "").strip().casefold()
+        m_to = str(message.get("to") or "").strip().casefold()
+        if m_from == "usuario" and m_to in (sender_low, rec_low, "todos"):
+            if stamp > last_user_ts:
+                last_user_ts = stamp
+    last_pair: tuple[float, dict[str, Any]] | None = None
+    for path, message in entries:
+        stamp = mailbox_store.message_timestamp(path, message)
+        if now - stamp > window_s or stamp <= last_user_ts:
+            continue
+        m_from = str(message.get("from") or "").strip().casefold()
+        m_to = str(message.get("to") or "").strip().casefold()
+        if (m_from == rec_low and m_to == sender_low) or (m_from == sender_low and m_to == rec_low):
+            if last_pair is None or stamp >= last_pair[0]:
+                last_pair = (stamp, message)
+    if last_pair is None:
+        return "", 0
+    _ts, msg = last_pair
+    m_from = str(msg.get("from") or "").strip().casefold()
+    try:
+        prev_hops = int(msg.get("hops") or 0)
+    except Exception:
+        prev_hops = 0
+    if m_from == rec_low:
+        next_hops = prev_hops + 1
+        _check_hops(next_hops)
+        return str(msg.get("id") or "").strip(), next_hops
+    if prev_hops > 0:
+        next_hops = prev_hops + 1
+        _check_hops(next_hops)
+        chain_id = str(msg.get("reply_to") or msg.get("id") or "").strip()
+        return chain_id, next_hops
+    return "", 0
+
+
 def tool_msg_send(args: dict[str, Any]) -> str:
     alias = _resolve_alias(args)
     raw_reply_to = args.get("reply_to")
     reply_to = str(raw_reply_to).strip() if isinstance(raw_reply_to, str) and raw_reply_to.strip() else ""
-    hops = _hops_for(reply_to) if reply_to else 0
-    message_id, path, message = _create_message(
-        to=args.get("to"),
-        body=args.get("body"),
-        subject=args.get("subject"),
-        reply_to=reply_to or None,
-        hops=hops,
-        sender=alias,
-    )
+    with _MAILBOX_LOCK:
+        if reply_to:
+            hops = _hops_for(reply_to)
+        else:
+            reply_to, hops = _infer_active_thread(alias, args.get("to"))
+        message_id, path, message = _create_message(
+            to=args.get("to"),
+            body=args.get("body"),
+            subject=args.get("subject"),
+            reply_to=reply_to or None,
+            hops=hops,
+            sender=alias,
+        )
     return (
         f"Mensaje enviado a {message['to']}.\n"
         f"id: {message_id}\n"
         f"desde: {message['from']}\n"
+        f"hops: {hops}\n"
         f"archivo: {path.name}"
     )
 
@@ -1633,6 +1925,7 @@ def tool_msg_reply(args: dict[str, Any]) -> str:
         hops=_hops_for(message_id),
         sender=alias,
     )
+    _clear_wake_lock()
     return (
         f"Respuesta enviada a {recipient}.\n"
         f"id: {new_id}\n"
